@@ -1,0 +1,5 @@
+# Pinned for reproducible installs across machines.
+# To refresh pins after testing upgrades: pip install -U <pkg> && pip freeze | grep -E '^(pandas|requests|PuLP)='
+pandas==2.2.3
+requests==2.32.3
+PuLP==2.9.0
