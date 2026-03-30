@@ -1,23 +1,30 @@
 """
-Read geocoded_epdk_data_partial.csv and export rows whose Latitude/Longitude are still missing.
+Read data/geocoded_epdk_data_partial.csv and export rows whose Latitude/Longitude are still missing.
 
-Writes epdk_ungeocoded_rows.csv and epdk_ungeocoded_addresses.csv (unique Adres).
-Use before another geocoding pass. For day-to-day analysis, prefer export_epdk_geocoding_split.py
-(geocoded_epdk_data.csv + epdk_missing_geocoding.csv).
+Writes data/epdk_ungeocoded_rows.csv and data/epdk_ungeocoded_addresses.csv (unique Adres).
+Use before another geocoding pass. For day-to-day analysis, prefer util/export_epdk_geocoding_split.py
+(data/geocoded_epdk_data.csv + data/epdk_missing_geocoding.csv).
 """
 import os
+from pathlib import Path
 
 import pandas as pd
 
-PARTIAL_FILE = "geocoded_epdk_data_partial.csv"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = REPO_ROOT / "data"
+
+PARTIAL_FILE = DATA_DIR / "geocoded_epdk_data_partial.csv"
 ADDRESS_COLUMN = "Adres"
-ROWS_OUTPUT = "epdk_ungeocoded_rows.csv"
-UNIQUE_ADDRESSES_OUTPUT = "epdk_ungeocoded_addresses.csv"
+ROWS_OUTPUT = DATA_DIR / "epdk_ungeocoded_rows.csv"
+UNIQUE_ADDRESSES_OUTPUT = DATA_DIR / "epdk_ungeocoded_addresses.csv"
 
 
 def main():
     if not os.path.isfile(PARTIAL_FILE):
-        print(f"Missing {PARTIAL_FILE}. Run geocode_osm.py first (or point PARTIAL_FILE to your partial CSV).")
+        print(
+            f"Missing {PARTIAL_FILE}. Run `python api/geocode_osm.py` from the repo root first "
+            "(or point PARTIAL_FILE to your partial CSV)."
+        )
         raise SystemExit(1)
 
     df = pd.read_csv(PARTIAL_FILE)

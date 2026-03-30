@@ -1,19 +1,23 @@
 """
-Split geocoded_epdk_data_partial.csv into:
-  - geocoded_epdk_data.csv       — rows with both Latitude and Longitude
-  - epdk_missing_geocoding.csv   — rows still missing either coordinate
+Split data/geocoded_epdk_data_partial.csv into:
+  - data/geocoded_epdk_data.csv       — rows with both Latitude and Longitude
+  - data/epdk_missing_geocoding.csv   — rows still missing either coordinate
 
 Run after updating the partial file. For a future Google pass on leftovers, either rerun
-extract_ungeocoded.py (reads the partial) or build a unique-address list from
-epdk_missing_geocoding.csv.
+util/extract_ungeocoded.py (reads the partial) or build a unique-address list from
+data/epdk_missing_geocoding.csv.
 """
 import csv
 import os
 import sys
+from pathlib import Path
 
-PARTIAL_FILE = "geocoded_epdk_data_partial.csv"
-OUT_GEOCODED = "geocoded_epdk_data.csv"
-OUT_MISSING = "epdk_missing_geocoding.csv"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = REPO_ROOT / "data"
+
+PARTIAL_FILE = DATA_DIR / "geocoded_epdk_data_partial.csv"
+OUT_GEOCODED = DATA_DIR / "geocoded_epdk_data.csv"
+OUT_MISSING = DATA_DIR / "epdk_missing_geocoding.csv"
 
 
 def _cell_float(s):

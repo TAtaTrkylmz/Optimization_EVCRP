@@ -4,24 +4,28 @@ Further geocoding with TomTom Search Geocode API for addresses still empty in th
 Useful when Google (or another provider) hit quota before finishing — remaining blanks are not
 necessarily “hard” addresses; they may simply not have been geocoded yet.
 
-Run extract_ungeocoded.py first on current geocoded_epdk_data_partial.csv so
-epdk_ungeocoded_addresses.csv lists only addresses still without coordinates.
+Run util/extract_ungeocoded.py first on current data/geocoded_epdk_data_partial.csv so
+data/epdk_ungeocoded_addresses.csv lists only addresses still without coordinates.
 
 Each distinct address is queried at most once: unique input + checkpoint skips retries.
 """
 import os
 import sys
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 import pandas as pd
 import requests
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = REPO_ROOT / "data"
+
 # --- CONFIGURATION ---
-UNIQUE_ADDRESSES_FILE = "epdk_ungeocoded_addresses.csv"
-PARTIAL_FILE = "geocoded_epdk_data_partial.csv"
-OUTPUT_FILE = "geocoded_epdk_data.csv"
-CHECKPOINT_FILE = "geocoded_tomtom_checkpoint.csv"
+UNIQUE_ADDRESSES_FILE = DATA_DIR / "epdk_ungeocoded_addresses.csv"
+PARTIAL_FILE = DATA_DIR / "geocoded_epdk_data_partial.csv"
+OUTPUT_FILE = DATA_DIR / "geocoded_epdk_data.csv"
+CHECKPOINT_FILE = DATA_DIR / "geocoded_tomtom_checkpoint.csv"
 ADDRESS_COLUMN = "Adres"
 SAVE_EVERY = 10
 SLEEP_SEC = 0.05
@@ -30,11 +34,12 @@ MAX_API_CALLS_PER_RUN = 2500
 TOMTOM_GEOCODE_BASE = "https://api.tomtom.com/search/2/geocode"
 
 
-def load_env_dotenv(path=".env"):
+def load_env_dotenv(path=None):
     """Set os.environ from KEY=value lines if .env exists (no extra dependency)."""
-    if not os.path.isfile(path):
+    p = Path(path) if path is not None else REPO_ROOT / ".env"
+    if not p.is_file():
         return
-    with open(path, encoding="utf-8") as f:
+    with open(p, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -136,7 +141,7 @@ def main():
     if not os.path.isfile(UNIQUE_ADDRESSES_FILE):
         print(
             f"Missing {UNIQUE_ADDRESSES_FILE}.\n"
-            "Run: python extract_ungeocoded.py"
+            "Run: python util/extract_ungeocoded.py (from the repo root)"
         )
         sys.exit(1)
     if not os.path.isfile(PARTIAL_FILE):

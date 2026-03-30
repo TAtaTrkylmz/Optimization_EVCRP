@@ -79,7 +79,14 @@ You should see `OK` and a pandas version with no import errors.
 
 1. Open a terminal in the repo root.
 2. **Activate** `.venv` (same commands as above).
-3. Run scripts with `python geocode_osm.py`, `python MILP_solverfw_test.py`, etc.
+3. Run scripts from the repo root, for example:
+   - `python api/geocode_osm.py`
+   - `python util/extract_ungeocoded.py`
+   - `python util/export_epdk_geocoding_split.py`
+   - `python milp/MILP_solverfw_test.py`
+   - `python milp/RouteEvaluator.py`
+
+Geocoding scripts read and write CSVs under **`data/`**; keep your working directory at the project root (or adjust paths in each script’s configuration block).
 
 Do **not** commit `.venv` or rely on a shared copy of it; only **`requirements.txt`** is shared in Git.
 
@@ -114,4 +121,4 @@ Select the interpreter at **`.venv/bin/python`** (macOS/Linux) or **`.venv\Scrip
 
 ## Related docs
 
-- [GEOCODING.md](GEOCODING.md) — geocoding pipeline and data files.
+- [GEOCODING.md](GEOCODING.md) — geocoding pipeline, `data/` CSVs, and script paths.

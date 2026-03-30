@@ -5,25 +5,29 @@ Typical reasons rows are still empty: OSM had no hit, or you stopped early (quot
 interrupt). Google is not implied to be “worse” — free-tier quota often ends the run before
 every address is tried.
 
-Flow: run extract_ungeocoded.py first, then this script.
+Flow: run util/extract_ungeocoded.py first, then this script.
 
-Reads epdk_ungeocoded_addresses.csv, maintains a Google-specific checkpoint, merges into
-geocoded_epdk_data_partial.csv and refreshes geocoded_epdk_data.csv.
+Reads data/epdk_ungeocoded_addresses.csv, maintains a Google-specific checkpoint, merges into
+data/geocoded_epdk_data_partial.csv and refreshes data/geocoded_epdk_data.csv.
 
 Each distinct address is queried at most once: unique input + checkpoint skips retries.
 """
 import os
 import sys
 import time
+from pathlib import Path
 
 import pandas as pd
 import requests
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = REPO_ROOT / "data"
+
 # --- CONFIGURATION ---
-UNIQUE_ADDRESSES_FILE = "epdk_ungeocoded_addresses.csv"
-PARTIAL_FILE = "geocoded_epdk_data_partial.csv"
-OUTPUT_FILE = "geocoded_epdk_data.csv"
-CHECKPOINT_FILE = "geocoded_google_checkpoint.csv"
+UNIQUE_ADDRESSES_FILE = DATA_DIR / "epdk_ungeocoded_addresses.csv"
+PARTIAL_FILE = DATA_DIR / "geocoded_epdk_data_partial.csv"
+OUTPUT_FILE = DATA_DIR / "geocoded_epdk_data.csv"
+CHECKPOINT_FILE = DATA_DIR / "geocoded_google_checkpoint.csv"
 ADDRESS_COLUMN = "Adres"
 SAVE_EVERY = 10
 # Seconds between requests (tune for your Google Cloud quota).
@@ -34,11 +38,12 @@ MAX_API_CALLS_PER_RUN = 1000
 GOOGLE_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 
 
-def load_env_dotenv(path=".env"):
+def load_env_dotenv(path=None):
     """Set os.environ from KEY=value lines if .env exists (no extra dependency)."""
-    if not os.path.isfile(path):
+    p = Path(path) if path is not None else REPO_ROOT / ".env"
+    if not p.is_file():
         return
-    with open(path, encoding="utf-8") as f:
+    with open(p, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -138,7 +143,7 @@ def main():
     if not os.path.isfile(UNIQUE_ADDRESSES_FILE):
         print(
             f"Missing {UNIQUE_ADDRESSES_FILE}.\n"
-            "Run: python extract_ungeocoded.py"
+            "Run: python util/extract_ungeocoded.py (from the repo root)"
         )
         sys.exit(1)
     if not os.path.isfile(PARTIAL_FILE):

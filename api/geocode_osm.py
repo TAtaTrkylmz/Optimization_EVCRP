@@ -1,17 +1,21 @@
 import os
 import sys
 import time
+from pathlib import Path
 
 import pandas as pd
 import requests
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = REPO_ROOT / "data"
+
 # --- 1. CONFIGURATION ---
-INPUT_FILE = "epdk_data.csv"
-OUTPUT_FILE = "geocoded_epdk_data.csv"
+INPUT_FILE = DATA_DIR / "epdk_data.csv"
+OUTPUT_FILE = DATA_DIR / "geocoded_epdk_data.csv"
 # Unique-address cache: resume skips rows already present (success or recorded failure).
-CHECKPOINT_FILE = "geocoded_epdk_checkpoint.csv"
+CHECKPOINT_FILE = DATA_DIR / "geocoded_epdk_checkpoint.csv"
 # Full input rows merged with whatever coords are known so far (includes NaN where pending).
-PARTIAL_OUTPUT_FILE = "geocoded_epdk_data_partial.csv"
+PARTIAL_OUTPUT_FILE = DATA_DIR / "geocoded_epdk_data_partial.csv"
 ADDRESS_COLUMN = "Adres"
 # How often to flush checkpoint + partial CSV (1 = every geocode; higher = less disk I/O).
 SAVE_EVERY = 10
