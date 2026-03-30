@@ -2,6 +2,9 @@
 .DS_Store
 .env
 
+# Scenario run outputs (Izmir–Ankara MILP report .txt)
+output/
+
 # Python
 .venv/
 venv/
