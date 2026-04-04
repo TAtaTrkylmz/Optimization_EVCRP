@@ -9,24 +9,33 @@ EV charging route / optimization work (MILP tests, route evaluation, EPDK geocod
 | `api/` | Geocoding scripts (Nominatim, Google, TomTom) and API smoke tests |
 | `data/` | EPDK CSVs, geocoded outputs, checkpoints, intermediate extracts |
 | `doc/` | Setup and geocoding documentation |
-| `milp/` | MILP solver experiments, route evaluation, and **[Izmir→Ankara real-data test](doc/IZMIR_ANKARA_ROUTE_TEST.md)** (`izmir_ankara_tomtom_epdk_test.py`) |
+| `milp/` | MILP/DP solver experiments, route evaluation, and **[Izmir→Ankara real-data test](doc/IZMIR_ANKARA_ROUTE_TEST.md)** (`izmir_ankara_tomtom_epdk_test.py`) |
 | `util/` | Helpers: ungeocoded extract, split partial CSV into geocoded + missing |
+| `run_planner.py` | **[Personalizable EV Route Planner](doc/PERSONALIZABLE_PLANNER.md)** — CLI for optimal routing with user preferences |
 
-Run Python entrypoints from the **repository root** so paths resolve to `data/` correctly (for example `python api/geocode_osm.py`).
+Run Python entrypoints from the **repository root** so paths resolve to `data/` correctly (for example `python run_planner.py --source "Izmir" --dest "Ankara" --battery-start 85 --battery-end 20`).
 
 ## Setup
 
-**[doc/SETUP.md](doc/SETUP.md)** — create a `.venv`, install pinned dependencies from `requirements.txt`, and verify imports. Use this so everyone gets the same Python packages on macOS, Windows, or Linux.
+**[doc/SETUP.md](doc/SETUP.md)** — create a `.venv`, install pinned dependencies from `requirements.txt`, and verify imports.
 
 ## Geocoding
 
-**[doc/GEOCODING.md](doc/GEOCODING.md)** — how `data/epdk_data.csv` is geocoded (Nominatim, Google, TomTom) and how `data/geocoded_epdk_data_partial.csv` / export splits work.
+**[doc/GEOCODING.md](doc/GEOCODING.md)** — how `data/epdk_data.csv` is geocoding process and outputs.
 
-## Izmir → Ankara scenario test
+## Personalizable EV Route Planning
 
-**[doc/IZMIR_ANKARA_ROUTE_TEST.md](doc/IZMIR_ANKARA_ROUTE_TEST.md)** — TomTom + `geocoded_epdk_data.csv` + MILP; writes `output/izmir_ankara_last_run.txt` by default.
+**[doc/PERSONALIZABLE_PLANNER.md](doc/PERSONALIZABLE_PLANNER.md)** — New NumPy-based dynamic programming planner with user-configurable priorities and battery targets.
+
+```bash
+python run_planner.py --source "Izmir, Turkey" --dest "Ankara, Turkey" --battery-start 85 --battery-end 20
+```
+
+## Izmir → Ankara MILP (Legacy)
+
+**[doc/IZMIR_ANKARA_ROUTE_TEST.md](doc/IZMIR_ANKARA_ROUTE_TEST.md)** — TomTom + `geocoded_epdk_data.csv` + MILP solve using PuLP. (old)
 
 ## Requirements
 
 - Python 3.10+
-- See `requirements.txt` (installed inside a virtual environment, not globally).
+- See `requirements.txt` (installed inside a virtual environment).
