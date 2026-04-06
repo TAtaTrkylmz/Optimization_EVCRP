@@ -163,6 +163,11 @@ class EVRoutePlanner:
     def __init__(self, prefs: UserPreferences):
         self.prefs = prefs
         self._api_key: Optional[str] = None
+        # Populated by plan_route() for use by plot_route()
+        self._coords: list[tuple[float, float]] = []
+        self._station_meta: list[tuple[str, str]] = []
+        self._dist_mat: np.ndarray | None = None
+        self._road_factor: float = 1.0
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -210,6 +215,13 @@ class EVRoutePlanner:
             n, energy_mat, time_mat, kw_arr, station_meta, coords,
         )
         print(f"       -> Found {len(results)} route(s)\n")
+
+        # Store internals for plotting
+        self._coords = coords
+        self._station_meta = station_meta
+        self._dist_mat = dist_mat
+        self._road_factor = road_factor
+
         return results
 
     # ── TomTom helpers ────────────────────────────────────────────────
@@ -606,3 +618,192 @@ def format_route(result: RouteResult, prefs: UserPreferences) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+# ─── Route Visualisation (matplotlib) ────────────────────────────────────
+
+def plot_route(
+    result: RouteResult,
+    prefs: UserPreferences,
+    coords: list[tuple[float, float]],
+    station_meta: list[tuple[str, str]],
+    dist_mat: np.ndarray,
+    road_factor: float,
+    save_path: Path | str | None = None,
+    show: bool = True,
+) -> None:
+    """
+    Draw a single route on a lat/lon scatter plot.
+
+    - Origin  = green ★
+    - Destination = red ■
+    - Charging stops on this route = blue ● (labelled)
+    - Other corridor stations = small grey ·
+    - Arrows between consecutive route nodes with road-km labels
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patheffects as pe
+
+    n = len(coords)
+    all_lons = [c[1] for c in coords]
+    all_lats = [c[0] for c in coords]
+
+    # Nodes on the route path
+    path = result.path_node_indices
+    path_set = set(path)
+    stop_indices = {s.node_index for s in result.stops}
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    # ── 1. Draw all corridor stations (grey, background) ─────────────
+    for i in range(1, n - 1):
+        if i not in path_set:
+            ax.plot(coords[i][1], coords[i][0], ".", color="#cccccc",
+                    markersize=5, zorder=1)
+
+    # ── 2. Draw route arrows ─────────────────────────────────────────
+    for step in range(len(path) - 1):
+        i, j = path[step], path[step + 1]
+        xi, yi = coords[i][1], coords[i][0]
+        xj, yj = coords[j][1], coords[j][0]
+        road_km = dist_mat[i, j] * road_factor
+
+        ax.annotate(
+            "",
+            xy=(xj, yj), xytext=(xi, yi),
+            arrowprops=dict(
+                arrowstyle="-|>",
+                color="#2563EB",
+                lw=2.0,
+                shrinkA=8, shrinkB=8,
+                connectionstyle="arc3,rad=0.08",
+            ),
+            zorder=2,
+        )
+        # distance label at midpoint
+        mx = (xi + xj) / 2
+        my = (yi + yj) / 2
+        ax.text(
+            mx, my, f"{road_km:.0f} km",
+            fontsize=7, color="#1e40af", fontweight="bold",
+            ha="center", va="bottom",
+            bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.8),
+            zorder=5,
+        )
+
+    # ── 3. Draw nodes ────────────────────────────────────────────────
+    text_outline = [pe.withStroke(linewidth=2.5, foreground="white")]
+
+    # Origin
+    ax.plot(coords[0][1], coords[0][0], marker="*", color="#16a34a",
+            markersize=20, zorder=10, markeredgecolor="white", markeredgewidth=0.8)
+    ax.annotate(
+        f"{prefs.source}\n({coords[0][0]:.4f}, {coords[0][1]:.4f})",
+        xy=(coords[0][1], coords[0][0]),
+        xytext=(12, -18), textcoords="offset points",
+        fontsize=8, fontweight="bold", color="#166534",
+        path_effects=text_outline, zorder=11,
+    )
+
+    # Destination
+    ax.plot(coords[-1][1], coords[-1][0], marker="s", color="#dc2626",
+            markersize=14, zorder=10, markeredgecolor="white", markeredgewidth=0.8)
+    ax.annotate(
+        f"{prefs.destination}\n({coords[-1][0]:.4f}, {coords[-1][1]:.4f})",
+        xy=(coords[-1][1], coords[-1][0]),
+        xytext=(-12, 14), textcoords="offset points",
+        fontsize=8, fontweight="bold", color="#991b1b",
+        ha="right", va="bottom",
+        path_effects=text_outline, zorder=11,
+    )
+
+    # Charging stops — alternate label above / below to reduce overlap
+    for si, s in enumerate(result.stops):
+        i = s.node_index
+        ax.plot(coords[i][1], coords[i][0], "o", color="#2563EB",
+                markersize=10, zorder=10, markeredgecolor="white", markeredgewidth=0.8)
+        name_short = s.station_name[:25]
+        label = (f"{name_short}\n"
+                 f"({coords[i][0]:.4f}, {coords[i][1]:.4f})\n"
+                 f"+{s.charge_amount_pct:.0f}%  {s.charge_time_min:.0f}min")
+        y_off = 14 if si % 2 == 0 else -14
+        va = "bottom" if si % 2 == 0 else "top"
+        ax.annotate(
+            label, xy=(coords[i][1], coords[i][0]),
+            xytext=(8, y_off), textcoords="offset points",
+            fontsize=6.5, color="#1e3a5f", va=va,
+            path_effects=text_outline, zorder=11,
+        )
+
+    # Route-through nodes that are NOT charging (passed through with 0 charge)
+    for idx in path:
+        if idx == 0 or idx == n - 1 or idx in stop_indices:
+            continue
+        ax.plot(coords[idx][1], coords[idx][0], "D", color="#f59e0b",
+                markersize=7, zorder=9, markeredgecolor="white", markeredgewidth=0.5)
+
+    # ── 4. Styling ───────────────────────────────────────────────────
+    pad_lon = (max(all_lons) - min(all_lons)) * 0.12 + 0.2
+    pad_lat = (max(all_lats) - min(all_lats)) * 0.12 + 0.1
+    ax.set_xlim(min(all_lons) - pad_lon, max(all_lons) + pad_lon)
+    ax.set_ylim(min(all_lats) - pad_lat, max(all_lats) + pad_lat)
+    ax.set_xlabel("Longitude", fontsize=10)
+    ax.set_ylabel("Latitude", fontsize=10)
+    ax.set_title(
+        f"Route #{result.rank}:  {prefs.source} → {prefs.destination}\n"
+        f"Z={result.z_score:.1f}  |  {result.total_time_min:.0f} min  |  "
+        f"{result.total_cost:.0f} TL  |  dest SOC {result.battery_at_destination_pct:.0f}%",
+        fontsize=11, fontweight="bold",
+    )
+    ax.grid(True, alpha=0.3, linestyle="--")
+
+    # Legend
+    from matplotlib.lines import Line2D
+    legend_elems = [
+        Line2D([0], [0], marker="*", color="w", markerfacecolor="#16a34a",
+               markersize=14, label="Origin"),
+        Line2D([0], [0], marker="s", color="w", markerfacecolor="#dc2626",
+               markersize=10, label="Destination"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="#2563EB",
+               markersize=9, label="Charging Stop"),
+        Line2D([0], [0], marker=".", color="w", markerfacecolor="#cccccc",
+               markersize=8, label="Corridor Station (unused)"),
+    ]
+    ax.legend(handles=legend_elems, loc="lower left", fontsize=8,
+              framealpha=0.9)
+
+    fig.tight_layout()
+
+    if save_path:
+        p = Path(save_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(p), dpi=150, bbox_inches="tight")
+        print(f"Plot saved: {p.resolve()}")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def plot_all_routes(
+    results: list[RouteResult],
+    prefs: UserPreferences,
+    planner: "EVRoutePlanner",
+    save_dir: Path | str | None = None,
+    show: bool = True,
+) -> None:
+    """Plot each route result, optionally saving PNGs to save_dir."""
+    if not planner._coords:
+        print("No graph data — call planner.plan_route() first.")
+        return
+    for r in results:
+        save_path = None
+        if save_dir:
+            d = Path(save_dir)
+            save_path = d / f"route_{r.rank}.png"
+        plot_route(
+            r, prefs,
+            planner._coords, planner._station_meta,
+            planner._dist_mat, planner._road_factor,
+            save_path=save_path, show=show,
+        )

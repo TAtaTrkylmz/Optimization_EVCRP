@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from milp.ev_route_planner import EVRoutePlanner, UserPreferences, format_route
+from milp.ev_route_planner import EVRoutePlanner, UserPreferences, format_route, plot_all_routes
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Energy consumption multiplier for external conditions, e.g. weather (default: 1.0)")
     p.add_argument("-o", "--output", type=Path, default=None,
                    help="Write results to a text file")
+    p.add_argument("--plot", type=Path, default=None, metavar="DIR",
+                   help="Save route map PNGs to this directory")
     return p
 
 
@@ -103,6 +105,9 @@ def main(argv: list[str] | None = None) -> None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
         print(f"Results written to: {args.output.resolve()}")
+
+    if args.plot:
+        plot_all_routes(results, prefs, planner, save_dir=args.plot, show=False)
 
 
 if __name__ == "__main__":
