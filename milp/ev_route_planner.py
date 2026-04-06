@@ -58,6 +58,17 @@ class UserPreferences:
     priority_cost: int = 3              # 1–5
     priority_anxiety: int = 3           # 1–5
 
+    # ── Enroute battery bounds ──
+    battery_min_enroute_pct: float = 0.0   # never drop below this %
+    battery_max_enroute_pct: float = 100.0 # never charge above this %
+
+    # ── External factors ──
+    external_factor: float = 1.0
+    """Multiplier on energy consumption.  >1 = harder conditions
+    (e.g. rain/snow, strong headwind, steep terrain, cold weather).
+    <1 = favourable conditions (tailwind, flat, mild weather).
+    Default 1.0 = nominal."""
+
     @property
     def w_time(self) -> float:
         return self.priority_time / 5.0
@@ -79,6 +90,14 @@ class UserPreferences:
             raise ValueError("battery_start_pct must be 0-100")
         if not (0 <= self.battery_end_min_pct <= 100):
             raise ValueError("battery_end_min_pct must be 0-100")
+        if not (0 <= self.battery_min_enroute_pct <= 100):
+            raise ValueError("battery_min_enroute_pct must be 0-100")
+        if not (0 <= self.battery_max_enroute_pct <= 100):
+            raise ValueError("battery_max_enroute_pct must be 0-100")
+        if self.battery_min_enroute_pct > self.battery_max_enroute_pct:
+            raise ValueError("battery_min_enroute_pct must be <= battery_max_enroute_pct")
+        if self.external_factor <= 0:
+            raise ValueError("external_factor must be > 0")
 
 
 @dataclass
@@ -328,10 +347,11 @@ class EVRoutePlanner:
         return 2 * 6371.0 * np.arcsin(np.minimum(1.0, np.sqrt(h)))
 
     def _energy_matrix(self, dist_mat: np.ndarray, road_factor: float) -> np.ndarray:
-        """Energy cost (%) for each node pair."""
+        """Energy cost (%) for each node pair, scaled by external_factor."""
         road_km = dist_mat * road_factor
         kwh = (road_km / 100.0) * self.prefs.consumption_kwh_per_100km
-        return (kwh / self.prefs.battery_capacity_kwh) * 100.0
+        base_pct = (kwh / self.prefs.battery_capacity_kwh) * 100.0
+        return base_pct * self.prefs.external_factor
 
     @staticmethod
     def _time_matrix(dist_mat: np.ndarray, crow_total: float, drive_min: float) -> np.ndarray:
@@ -362,6 +382,8 @@ class EVRoutePlanner:
         INF = float("inf")
         exclude = exclude or set()
         w_t, w_c, w_a = self.prefs.w_time, self.prefs.w_cost, self.prefs.w_anxiety
+        b_floor = int(round(self.prefs.battery_min_enroute_pct))
+        b_ceil  = int(round(self.prefs.battery_max_enroute_pct))
 
         dp = np.full((n, B), INF)
         pred: list[list[tuple[int, int, int] | None]] = [[None] * B for _ in range(n)]
@@ -375,9 +397,11 @@ class EVRoutePlanner:
             for b in range(B):
                 if dp[i][b] >= INF:
                     continue
-                # charge options
+                # charge options (capped at enroute ceiling)
                 if 0 < i < n - 1:
-                    max_q = int(B_MAX) - b
+                    max_q = min(int(B_MAX), b_ceil) - b
+                    if max_q < 0:
+                        max_q = 0
                     charges = list(range(0, max_q + 1, CHARGE_STEP_PCT))
                     if max_q > 0 and max_q not in charges:
                         charges.append(max_q)
@@ -396,9 +420,13 @@ class EVRoutePlanner:
                         if e_ij > B_MAX:
                             continue
                         b_arrive_f = b_depart - e_ij
-                        if b_arrive_f < -0.5:
+                        if b_arrive_f < b_floor - 0.5:
                             continue
                         b_arr = max(0, min(int(B_MAX), int(round(b_arrive_f))))
+
+                        # enforce enroute floor constraint (on discrete level)
+                        if b_arr < b_floor:
+                            continue
 
                         anxiety = max(0.0, ANXIETY_THRESHOLD - b_arrive_f)
                         cost = w_t * (time_mat[i, j] + ct) + w_c * cc + w_a * anxiety
@@ -550,6 +578,8 @@ def format_route(result: RouteResult, prefs: UserPreferences) -> str:
         f"  Route #{result.rank}   (Z-score: {result.z_score:.2f})",
         f"{'='*60}",
         f"  Weights  ->  time={prefs.w_time:.1f}  cost={prefs.w_cost:.1f}  anxiety={prefs.w_anxiety:.1f}",
+        f"  External factor : {prefs.external_factor:.2f}",
+        f"  Enroute bounds  : floor={prefs.battery_min_enroute_pct:.0f}%  ceil={prefs.battery_max_enroute_pct:.0f}%",
         f"  Drive time      : {result.total_drive_time_min:.1f} min",
         f"  Charge time     : {result.total_charge_time_min:.1f} min",
         f"  Total time      : {result.total_time_min:.1f} min",

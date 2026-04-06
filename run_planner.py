@@ -42,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Cost priority 1-5 (default: 3)")
     p.add_argument("--w-anxiety", type=int, default=3, choices=range(1, 6), metavar="1-5",
                    help="Range anxiety priority 1-5 (default: 3)")
+    p.add_argument("--battery-floor", type=float, default=0.0,
+                   help="Never drop below this battery %% during travel (default: 0)")
+    p.add_argument("--battery-ceil", type=float, default=100.0,
+                   help="Never charge above this battery %% during travel (default: 100)")
+    p.add_argument("--external-factor", type=float, default=1.0,
+                   help="Energy consumption multiplier for external conditions, e.g. weather (default: 1.0)")
     p.add_argument("-o", "--output", type=Path, default=None,
                    help="Write results to a text file")
     return p
@@ -60,6 +66,9 @@ def main(argv: list[str] | None = None) -> None:
         priority_time=args.w_time,
         priority_cost=args.w_cost,
         priority_anxiety=args.w_anxiety,
+        battery_min_enroute_pct=args.battery_floor,
+        battery_max_enroute_pct=args.battery_ceil,
+        external_factor=args.external_factor,
     )
 
     print()
@@ -69,6 +78,8 @@ def main(argv: list[str] | None = None) -> None:
     print(f"  From : {prefs.source}")
     print(f"  To   : {prefs.destination}")
     print(f"  Battery: {prefs.battery_start_pct:.0f}% now -> want {prefs.battery_end_min_pct:.0f}% at dest")
+    print(f"  Enroute: never below {prefs.battery_min_enroute_pct:.0f}%, never above {prefs.battery_max_enroute_pct:.0f}%")
+    print(f"  External factor: {prefs.external_factor:.2f}")
     print(f"  Vehicle: {prefs.battery_capacity_kwh} kWh, {prefs.consumption_kwh_per_100km} kWh/100km")
     print(f"  Priorities (1-5): time={prefs.priority_time}  cost={prefs.priority_cost}  anxiety={prefs.priority_anxiety}")
     print(f"  Weights (0-1)   : time={prefs.w_time:.1f}  cost={prefs.w_cost:.1f}  anxiety={prefs.w_anxiety:.1f}")
