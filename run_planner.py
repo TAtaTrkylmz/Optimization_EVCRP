@@ -2,10 +2,8 @@
 """
 CLI for the personalizable EV Route Planner.
 
-Example:
-    python run_planner.py --source "Izmir, Turkey" --dest "Ankara, Turkey" \
-        --battery-start 85 --battery-end 20 \
-        --w-time 5 --w-cost 3 --w-anxiety 2
+Example (single line for PowerShell):
+    python run_planner.py --source "Izmir, Turkey" --dest "Ankara, Turkey" --battery-start 85 --battery-end 20 --w-time 5 --w-cost 3 --w-anxiety 2
 """
 from __future__ import annotations
 
@@ -13,29 +11,26 @@ import argparse
 import sys
 from pathlib import Path
 
-# Ensure repo root is on sys.path so `milp` package imports work
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from milp.ev_route_planner import EVRoutePlanner, UserPreferences, format_route, plot_all_routes
+from planner import EVRoutePlanner, UserPreferences
+from planner.visualization import plot_route, plot_zscore_convergence
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Personalizable EV Route Planner — NumPy DP optimiser",
+        description="Personalizable EV Route Planner (Evolutionary Algorithm)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Priorities are integers 1-5 (1 = least important, 5 = most).\n"
-            "They are converted to 0-1 floats by dividing by 5."
-        ),
+        epilog="Priorities are integers 1-5 (1 = least, 5 = most). Divided by 5 for weights.",
     )
-    p.add_argument("--source", required=True, help='Source location, e.g. "Izmir, Turkey"')
-    p.add_argument("--dest", required=True, help='Destination location, e.g. "Ankara, Turkey"')
-    p.add_argument("--battery-start", type=float, required=True, help="Current battery level (%%)")
-    p.add_argument("--battery-end", type=float, required=True, help="Desired ending battery level (%%)")
-    p.add_argument("--battery-kwh", type=float, default=60.0, help="Battery capacity in kWh (default: 60)")
-    p.add_argument("--consumption", type=float, default=18.0, help="Consumption in kWh/100km (default: 18)")
+    p.add_argument("--source", required=True, help='Source, e.g. "Izmir, Turkey"')
+    p.add_argument("--dest", required=True, help='Destination, e.g. "Ankara, Turkey"')
+    p.add_argument("--battery-start", type=float, required=True, help="Current battery %%")
+    p.add_argument("--battery-end", type=float, required=True, help="Desired ending battery %%")
+    p.add_argument("--battery-kwh", type=float, default=60.0, help="Battery capacity kWh (default: 60)")
+    p.add_argument("--consumption", type=float, default=18.0, help="kWh/100km (default: 18)")
     p.add_argument("--w-time", type=int, default=3, choices=range(1, 6), metavar="1-5",
                    help="Time priority 1-5 (default: 3)")
     p.add_argument("--w-cost", type=int, default=3, choices=range(1, 6), metavar="1-5",
@@ -43,16 +38,49 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--w-anxiety", type=int, default=3, choices=range(1, 6), metavar="1-5",
                    help="Range anxiety priority 1-5 (default: 3)")
     p.add_argument("--battery-floor", type=float, default=0.0,
-                   help="Never drop below this battery %% during travel (default: 0)")
+                   help="Never drop below this %% during travel (default: 0)")
     p.add_argument("--battery-ceil", type=float, default=100.0,
-                   help="Never charge above this battery %% during travel (default: 100)")
-    p.add_argument("--external-factor", type=float, default=1.0,
-                   help="Energy consumption multiplier for external conditions, e.g. weather (default: 1.0)")
+                   help="Never charge above this %% during travel (default: 100)")
     p.add_argument("-o", "--output", type=Path, default=None,
-                   help="Write results to a text file")
-    p.add_argument("--plot", type=Path, default=None, metavar="DIR",
-                   help="Save route map PNGs to this directory")
+                   help="Write summary to a text file")
     return p
+
+
+def format_route(result, prefs) -> str:
+    """Pretty-print a single route result."""
+    lines = [
+        f"{'='*60}",
+        f"  BEST ROUTE   (Z-score: {result.z_score:.2f})",
+        f"{'='*60}",
+        f"  Weights  ->  time={prefs.w_time:.1f}  cost={prefs.w_cost:.1f}  anxiety={prefs.w_anxiety:.1f}",
+        f"  Enroute bounds  : floor={prefs.battery_min_enroute_pct:.0f}%  ceil={prefs.battery_max_enroute_pct:.0f}%",
+        f"  Drive time      : {result.total_drive_time_min:.1f} min",
+        f"  Charge time     : {result.total_charge_time_min:.1f} min",
+        f"  Total time      : {result.total_time_min:.1f} min",
+        f"  Total cost      : {result.total_cost:.1f} TL",
+        f"  Battery at dest : {result.battery_at_destination_pct:.1f}%",
+        "",
+    ]
+    if result.stops:
+        lines.append("  Charging Stops:")
+        for s in result.stops:
+            lines.append(
+                f"    * {s.station_name}  (ID {s.station_id}, {s.max_kw:.0f} kW)\n"
+                f"      Arrive {s.battery_on_arrival_pct:.1f}% -> charge {s.charge_amount_pct:.1f}% "
+                f"-> depart {s.battery_on_departure_pct:.1f}%  "
+                f"({s.charge_time_min:.1f} min, {s.charge_cost:.1f} TL)"
+            )
+        lines.append("")
+    else:
+        lines.append("  No charging stops needed -- direct drive!\n")
+    return "\n".join(lines)
+
+
+def _make_save_name(prefs: UserPreferences) -> str:
+    """Build filename: {src}_to_{dest}_{wt}-{wc}-{wa}"""
+    src = prefs.source.replace(" ", "").replace(",", "")
+    dst = prefs.destination.replace(" ", "").replace(",", "")
+    return f"{src}_to_{dst}_{prefs.priority_time}-{prefs.priority_cost}-{prefs.priority_anxiety}"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -70,7 +98,6 @@ def main(argv: list[str] | None = None) -> None:
         priority_anxiety=args.w_anxiety,
         battery_min_enroute_pct=args.battery_floor,
         battery_max_enroute_pct=args.battery_ceil,
-        external_factor=args.external_factor,
     )
 
     print()
@@ -80,8 +107,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"  From : {prefs.source}")
     print(f"  To   : {prefs.destination}")
     print(f"  Battery: {prefs.battery_start_pct:.0f}% now -> want {prefs.battery_end_min_pct:.0f}% at dest")
-    print(f"  Enroute: never below {prefs.battery_min_enroute_pct:.0f}%, never above {prefs.battery_max_enroute_pct:.0f}%")
-    print(f"  External factor: {prefs.external_factor:.2f}")
+    print(f"  Enroute: floor={prefs.battery_min_enroute_pct:.0f}%  ceil={prefs.battery_max_enroute_pct:.0f}%")
     print(f"  Vehicle: {prefs.battery_capacity_kwh} kWh, {prefs.consumption_kwh_per_100km} kWh/100km")
     print(f"  Priorities (1-5): time={prefs.priority_time}  cost={prefs.priority_cost}  anxiety={prefs.priority_anxiety}")
     print(f"  Weights (0-1)   : time={prefs.w_time:.1f}  cost={prefs.w_cost:.1f}  anxiety={prefs.w_anxiety:.1f}")
@@ -89,25 +115,33 @@ def main(argv: list[str] | None = None) -> None:
     print()
 
     planner = EVRoutePlanner(prefs)
-    results = planner.plan_route()
+    best_route, all_evaluated, convergence = planner.plan_route()
 
-    if not results:
-        print("No feasible route found. Try increasing battery or relaxing end-battery target.")
-        sys.exit(1)
+    # Print best route details
+    text = format_route(best_route, prefs)
+    print(text)
 
-    output_lines = []
-    for r in results:
-        text = format_route(r, prefs)
-        print(text)
-        output_lines.append(text)
-
+    # Save text output if requested
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+        args.output.write_text(text + "\n", encoding="utf-8")
         print(f"Results written to: {args.output.resolve()}")
 
-    if args.plot:
-        plot_all_routes(results, prefs, planner, save_dir=args.plot, show=False)
+    # Save route plot as {src}->{dest}_{wt}-{wc}-{wa}.png
+    save_name = _make_save_name(prefs)
+    save_dir = Path("output")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    route_save = save_dir / f"{save_name}.png"
+
+    plot_route(
+        best_route, prefs,
+        planner.coords, planner.station_meta,
+        planner.dist_mat, planner.road_factor,
+        save_path=route_save,
+    )
+
+    # Show Z-score convergence
+    plot_zscore_convergence(convergence, prefs.source, prefs.destination)
 
 
 if __name__ == "__main__":

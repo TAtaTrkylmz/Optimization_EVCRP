@@ -25,6 +25,7 @@ from urllib.parse import quote
 import numpy as np
 import pandas as pd
 import requests
+import random
 
 # ─── Paths & Constants ───────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,7 +37,12 @@ CHARGE_COST_PER_PCT = 10.0        # flat TL per % charged
 DC_EFFICIENCY = 0.88
 MAX_CROSS_TRACK_KM = 120.0
 MAX_STATIONS_IN_MODEL = 40
-CHARGE_STEP_PCT = 5                # DP charge granularity (%)
+CHARGE_STEP_PCT = 5                # charge granularity (%)
+EA_POP_SIZE = 60
+EA_GENERATIONS = 100
+EA_MUTATION_RATE = 0.35
+EA_CROSSOVER_RATE = 0.6
+EA_TOURNAMENT_K = 3
 TOMTOM_GEOCODE_BASE = "https://api.tomtom.com/search/2/geocode"
 
 
@@ -208,13 +214,26 @@ class EVRoutePlanner:
         time_mat = self._time_matrix(dist_mat, crow_total, drive_min)
         print(f"       -> {n} nodes, matrices shape {dist_mat.shape}")
 
-        print("[6/6] Running forward DP optimisation...")
+        print("[6/6] Running evolutionary optimisation...")
         # station_kw array: index 0 = origin (0), 1..N = stations, N+1 = dest (0)
         kw_arr = np.array([0.0] + station_kw + [0.0])
-        results = self._find_top_routes(
+        results, all_zscores = self._find_routes_ea(
             n, energy_mat, time_mat, kw_arr, station_meta, coords,
         )
-        print(f"       -> Found {len(results)} route(s)\n")
+        print(f"       -> Found {len(results)} route(s)")
+
+        # ---- Print Z-score table of ALL evaluated solutions ----
+        print(f"\n{'-'*64}")
+        print(f"  Z-SCORE TABLE  ({len(all_zscores)} feasible solutions evaluated)")
+        print(f"{'-'*64}")
+        print(f"  {'Rank':<6} {'Z-score':<12} {'Stops':<7} {'Time(min)':<11} {'Cost(TL)':<10} {'Dest SOC'}")
+        print(f"  {'-'*6} {'-'*11} {'-'*6} {'-'*10} {'-'*9} {'-'*8}")
+        for idx, entry in enumerate(all_zscores[:40], 1):  # show top 40
+            print(f"  {idx:<6} {entry['z']:<12.2f} {entry['n_stops']:<7} "
+                  f"{entry['total_time']:<11.1f} {entry['cost']:<10.1f} {entry['dest_soc']:.1f}%")
+        if len(all_zscores) > 40:
+            print(f"  ... ({len(all_zscores) - 40} more solutions omitted)")
+        print(f"{'-'*64}\n")
 
         # Store internals for plotting
         self._coords = coords
@@ -372,7 +391,7 @@ class EVRoutePlanner:
             return np.zeros_like(dist_mat)
         return dist_mat * (drive_min / crow_total)
 
-    # ── Forward DP ────────────────────────────────────────────────────
+    # ── Forward DP (legacy – kept for reference) ─────────────────────
 
     def _charge_time_min(self, charge_pct: float, max_kw: float) -> float:
         if charge_pct <= 0 or max_kw <= 0:
@@ -381,12 +400,12 @@ class EVRoutePlanner:
         kwh = (charge_pct / 100.0) * self.prefs.battery_capacity_kwh
         return (kwh / kw_eff) * 60.0
 
-    def _forward_dp(
+    def _forward_dp_legacy(
         self, n: int, energy_mat: np.ndarray, time_mat: np.ndarray,
         station_kw: np.ndarray, exclude: set[int] | None = None,
     ) -> tuple[list[int] | None, dict[int, float] | None, float]:
         """
-        Forward DP on corridor DAG.
+        Forward DP on corridor DAG (LEGACY – O(n·B²) complexity).
         State: (node, battery_level_int).  Battery discretised to 1 %.
         Returns (path, charges_dict, z_score) or (None, None, inf).
         """
@@ -409,7 +428,6 @@ class EVRoutePlanner:
             for b in range(B):
                 if dp[i][b] >= INF:
                     continue
-                # charge options (capped at enroute ceiling)
                 if 0 < i < n - 1:
                     max_q = min(int(B_MAX), b_ceil) - b
                     if max_q < 0:
@@ -435,8 +453,6 @@ class EVRoutePlanner:
                         if b_arrive_f < b_floor - 0.5:
                             continue
                         b_arr = max(0, min(int(B_MAX), int(round(b_arrive_f))))
-
-                        # enforce enroute floor constraint (on discrete level)
                         if b_arr < b_floor:
                             continue
 
@@ -447,7 +463,6 @@ class EVRoutePlanner:
                             dp[j][b_arr] = total
                             pred[j][b_arr] = (i, b, q)
 
-        # best arrival at destination with battery >= end target
         dest = n - 1
         b_end = int(round(self.prefs.battery_end_min_pct))
         best_b, best_cost = -1, INF
@@ -459,7 +474,6 @@ class EVRoutePlanner:
         if best_b < 0 or best_cost >= INF:
             return None, None, INF
 
-        # reconstruct
         path: list[int] = []
         charges_map: dict[int, float] = {}
         node, bat = dest, best_b
@@ -475,32 +489,339 @@ class EVRoutePlanner:
         path.reverse()
         return path, charges_map, best_cost
 
-    # ── Top-3 routes ──────────────────────────────────────────────────
+    # ── Evolutionary Algorithm Solver ─────────────────────────────────
 
-    def _find_top_routes(
+    def _evaluate_plan(
+        self, stops: list[tuple[int, float]],
+        n: int, energy_mat: np.ndarray, time_mat: np.ndarray,
+        station_kw: np.ndarray,
+    ) -> tuple[float, dict | None]:
+        """
+        Simulate a charging plan.  Returns (z_score, details) or (inf, None).
+        stops: list of (node_index, charge_pct) for intermediate stations.
+        """
+        INF = float("inf")
+        b_floor = self.prefs.battery_min_enroute_pct
+        b_ceil = self.prefs.battery_max_enroute_pct
+
+        # Build path (sorted unique indices including origin/dest)
+        charge_map: dict[int, float] = {}
+        for idx, q in stops:
+            if 0 < idx < n - 1 and q > 0:
+                charge_map[idx] = charge_map.get(idx, 0) + q
+
+        path = sorted(set([0] + list(charge_map.keys()) + [n - 1]))
+
+        battery = self.prefs.battery_start_pct
+        total_drive = 0.0
+        total_ct = 0.0
+        total_cc = 0.0
+        total_anx = 0.0
+
+        for step in range(len(path) - 1):
+            i, j = path[step], path[step + 1]
+
+            # Charge at i (only at intermediate stations)
+            q = charge_map.get(i, 0.0)
+            if q > 0:
+                after = battery + q
+                if after > b_ceil + 0.01:
+                    return INF, None
+                battery = min(after, b_ceil)
+                total_ct += self._charge_time_min(q, float(station_kw[i]))
+                total_cc += q * CHARGE_COST_PER_PCT
+
+            # Drive i -> j
+            e = energy_mat[i, j]
+            battery -= e
+            if battery < b_floor - 0.01:
+                return INF, None
+
+            total_anx += max(0.0, ANXIETY_THRESHOLD - battery)
+            total_drive += time_mat[i, j]
+
+        # Terminal constraint
+        if battery < self.prefs.battery_end_min_pct - 0.01:
+            return INF, None
+
+        z = (self.prefs.w_time * (total_drive + total_ct)
+             + self.prefs.w_cost * total_cc
+             + self.prefs.w_anxiety * total_anx)
+
+        return z, {
+            "path": path,
+            "charge_map": charge_map,
+            "total_drive": total_drive,
+            "total_ct": total_ct,
+            "total_cc": total_cc,
+            "battery_dest": battery,
+            "z": z,
+        }
+
+    def _greedy_baseline(
+        self, n: int, energy_mat: np.ndarray, station_kw: np.ndarray,
+    ) -> list[tuple[int, float]]:
+        """
+        Greedy base case: charge to ceiling at the farthest reachable
+        station, then repeat until destination.
+        """
+        battery = self.prefs.battery_start_pct
+        b_ceil = self.prefs.battery_max_enroute_pct
+        b_floor = self.prefs.battery_min_enroute_pct
+        stops: list[tuple[int, float]] = []
+        current = 0
+
+        while current < n - 1:
+            # Find farthest reachable node
+            farthest = current
+            for j in range(current + 1, n):
+                arrival = battery - energy_mat[current, j]
+                if arrival >= b_floor:
+                    farthest = j
+                else:
+                    break  # stations are sorted, distances only grow
+
+            if farthest == n - 1:
+                # Can reach destination directly
+                battery -= energy_mat[current, n - 1]
+                break
+
+            if farthest <= current:
+                # Can't reach any node – battery too low, skip to next anyway
+                farthest = min(current + 1, n - 1)
+                battery -= energy_mat[current, farthest]
+                charge = max(0.0, b_ceil - battery)
+                battery = min(battery + charge, b_ceil)
+                if charge > 0 and farthest < n - 1:
+                    stops.append((farthest, round(charge)))
+                current = farthest
+                continue
+
+            # Drive to farthest, charge to ceiling there
+            battery -= energy_mat[current, farthest]
+            charge = max(0.0, b_ceil - battery)
+            battery = min(battery + charge, b_ceil)
+            if charge > 0:
+                stops.append((farthest, round(charge)))
+            current = farthest
+
+        return stops
+
+    def _generate_initial_population(
+        self, n: int, energy_mat: np.ndarray, station_kw: np.ndarray,
+        pop_size: int,
+    ) -> list[list[tuple[int, float]]]:
+        """Create a diverse initial population of charging plans."""
+        rng = random.Random(42)
+        population: list[list[tuple[int, float]]] = []
+
+        # 1. Greedy baseline (charge-to-max, go as far as possible)
+        greedy = self._greedy_baseline(n, energy_mat, station_kw)
+        population.append(greedy)
+
+        # 2. Conservative greedy: charge to 80% ceiling
+        b_ceil_orig = self.prefs.battery_max_enroute_pct
+        for partial_ceil in [80.0, 70.0, 60.0, 50.0]:
+            self.prefs.battery_max_enroute_pct = min(partial_ceil, b_ceil_orig)
+            population.append(self._greedy_baseline(n, energy_mat, station_kw))
+        self.prefs.battery_max_enroute_pct = b_ceil_orig
+
+        # 3. Stop at every other station with moderate charge
+        all_stations = list(range(1, n - 1))
+        for step_size in [2, 3, 4]:
+            stops: list[tuple[int, float]] = []
+            for idx in all_stations[::step_size]:
+                stops.append((idx, rng.choice([30, 40, 50, 60, 70, 80])))
+            population.append(stops)
+
+        # 4. Random subset plans
+        while len(population) < pop_size:
+            k = rng.randint(1, max(1, len(all_stations) // 2))
+            chosen = sorted(rng.sample(all_stations, min(k, len(all_stations))))
+            stops = []
+            for idx in chosen:
+                q = rng.choice([20, 30, 40, 50, 60, 70, 80, 90, 100])
+                q = min(q, self.prefs.battery_max_enroute_pct)
+                stops.append((idx, float(q)))
+            population.append(stops)
+
+        return population[:pop_size]
+
+    def _mutate(
+        self, stops: list[tuple[int, float]], n: int, rng: random.Random,
+    ) -> list[tuple[int, float]]:
+        """Apply random mutation to a charging plan."""
+        stops = list(stops)  # copy
+        b_ceil = self.prefs.battery_max_enroute_pct
+        all_stations = list(range(1, n - 1))
+        if not all_stations:
+            return stops
+
+        mutation = rng.choice(["add", "remove", "tweak_charge", "swap_station", "split"])
+
+        if mutation == "add" or len(stops) == 0:
+            new_idx = rng.choice(all_stations)
+            q = rng.choice([30, 50, 70, 90])
+            q = min(q, b_ceil)
+            stops.append((new_idx, float(q)))
+
+        elif mutation == "remove" and len(stops) > 1:
+            stops.pop(rng.randrange(len(stops)))
+
+        elif mutation == "tweak_charge" and stops:
+            i = rng.randrange(len(stops))
+            idx, q = stops[i]
+            delta = rng.choice([-20, -10, -5, 5, 10, 20])
+            new_q = max(5, min(b_ceil, q + delta))
+            stops[i] = (idx, float(new_q))
+
+        elif mutation == "swap_station" and stops:
+            i = rng.randrange(len(stops))
+            _, q = stops[i]
+            new_idx = rng.choice(all_stations)
+            stops[i] = (new_idx, q)
+
+        elif mutation == "split" and stops:
+            # Split one large charge into two smaller charges at nearby stations
+            i = rng.randrange(len(stops))
+            idx, q = stops[i]
+            if q >= 30:
+                q1 = round(q * 0.5)
+                q2 = round(q - q1)
+                # find a neighboring station
+                neighbors = [s for s in all_stations if abs(s - idx) <= 3 and s != idx]
+                if neighbors:
+                    stops[i] = (idx, float(q1))
+                    stops.append((rng.choice(neighbors), float(q2)))
+
+        # Deduplicate: merge charges at same station
+        merged: dict[int, float] = {}
+        for idx, q in stops:
+            merged[idx] = merged.get(idx, 0.0) + q
+        return [(idx, min(q, b_ceil)) for idx, q in sorted(merged.items())]
+
+    def _crossover(
+        self, p1: list[tuple[int, float]], p2: list[tuple[int, float]],
+        rng: random.Random,
+    ) -> list[tuple[int, float]]:
+        """Combine two parents: take station set from both, average charges."""
+        b_ceil = self.prefs.battery_max_enroute_pct
+        combined: dict[int, list[float]] = {}
+        for idx, q in p1:
+            combined.setdefault(idx, []).append(q)
+        for idx, q in p2:
+            combined.setdefault(idx, []).append(q)
+
+        child: list[tuple[int, float]] = []
+        for idx in sorted(combined):
+            # 50% chance to include each station, if included average the charges
+            if rng.random() < 0.6:
+                avg_q = sum(combined[idx]) / len(combined[idx])
+                # round to nearest CHARGE_STEP_PCT
+                avg_q = round(avg_q / CHARGE_STEP_PCT) * CHARGE_STEP_PCT
+                avg_q = max(CHARGE_STEP_PCT, min(b_ceil, avg_q))
+                child.append((idx, float(avg_q)))
+        return child
+
+    def _find_routes_ea(
         self, n, energy_mat, time_mat, station_kw, station_meta, coords,
-    ) -> list[RouteResult]:
+    ) -> tuple[list[RouteResult], list[dict]]:
+        """Evolutionary algorithm solver.  Returns (top_routes, all_z_entries)."""
+        rng = random.Random(42)
+        INF = float("inf")
+
+        # -- Generate initial population --
+        population = self._generate_initial_population(
+            n, energy_mat, station_kw, EA_POP_SIZE,
+        )
+
+        # Track ALL evaluated solutions (unique by station set + charges)
+        seen_keys: set[tuple] = set()
+        all_evaluated: list[dict] = []
+
+        def _plan_key(stops: list[tuple[int, float]]) -> tuple:
+            return tuple(sorted((idx, round(q)) for idx, q in stops))
+
+        def _eval_and_record(stops: list[tuple[int, float]]) -> float:
+            key = _plan_key(stops)
+            z, details = self._evaluate_plan(stops, n, energy_mat, time_mat, station_kw)
+            if key not in seen_keys and z < INF:
+                seen_keys.add(key)
+                charge_map = details["charge_map"] if details else {}
+                all_evaluated.append({
+                    "z": z,
+                    "stops": list(stops),
+                    "n_stops": len([q for _, q in stops if q > 0]),
+                    "total_time": details["total_drive"] + details["total_ct"] if details else 0,
+                    "cost": details["total_cc"] if details else 0,
+                    "dest_soc": details["battery_dest"] if details else 0,
+                    "path": details["path"] if details else [],
+                    "charge_map": charge_map,
+                })
+            return z
+
+        # Evaluate initial population
+        fitnesses = [_eval_and_record(ind) for ind in population]
+
+        # -- Evolutionary loop --
+        for gen in range(EA_GENERATIONS):
+            new_pop: list[list[tuple[int, float]]] = []
+
+            # Elitism: keep top 5
+            ranked = sorted(range(len(population)), key=lambda i: fitnesses[i])
+            for i in ranked[:5]:
+                new_pop.append(population[i])
+
+            while len(new_pop) < EA_POP_SIZE:
+                # Tournament selection
+                def _tournament() -> list[tuple[int, float]]:
+                    candidates = rng.sample(range(len(population)),
+                                           min(EA_TOURNAMENT_K, len(population)))
+                    best = min(candidates, key=lambda i: fitnesses[i])
+                    return list(population[best])
+
+                if rng.random() < EA_CROSSOVER_RATE:
+                    child = self._crossover(_tournament(), _tournament(), rng)
+                else:
+                    child = _tournament()
+
+                if rng.random() < EA_MUTATION_RATE:
+                    child = self._mutate(child, n, rng)
+
+                new_pop.append(child)
+
+            population = new_pop
+            fitnesses = [_eval_and_record(ind) for ind in population]
+
+            # Progress bar every 20 generations
+            if (gen + 1) % 20 == 0 or gen == 0:
+                best_z = min(fitnesses)
+                feas = sum(1 for f in fitnesses if f < INF)
+                print(f"       gen {gen+1:>3}/{EA_GENERATIONS}: "
+                      f"best Z={best_z:.1f}  feasible={feas}/{len(population)}  "
+                      f"unique evaluated={len(all_evaluated)}")
+
+        # -- Sort ALL evaluated solutions --
+        all_evaluated.sort(key=lambda d: d["z"])
+
+        # -- Build top RouteResults --
         results: list[RouteResult] = []
-        used: set[tuple[int, ...]] = set()
+        used_paths: set[tuple[int, ...]] = set()
+        for rank_idx, entry in enumerate(all_evaluated):
+            if len(results) >= 3:
+                break
+            path_key = tuple(entry["path"])
+            if path_key in used_paths:
+                continue
+            used_paths.add(path_key)
+            result = self._build_result(
+                len(results) + 1,
+                entry["path"], entry["charge_map"],
+                energy_mat, time_mat, station_kw, station_meta, coords,
+            )
+            results.append(result)
 
-        path, charges, z = self._forward_dp(n, energy_mat, time_mat, station_kw)
-        if path:
-            used.add(tuple(path))
-            results.append(self._build_result(1, path, charges, energy_mat, time_mat, station_kw, station_meta, coords))
-
-            # alternatives: exclude each intermediate station in the best path
-            for exc in [nd for nd in path if 0 < nd < n - 1]:
-                if len(results) >= 3:
-                    break
-                ap, ac, az = self._forward_dp(n, energy_mat, time_mat, station_kw, exclude={exc})
-                if ap and tuple(ap) not in used:
-                    used.add(tuple(ap))
-                    results.append(self._build_result(len(results) + 1, ap, ac, energy_mat, time_mat, station_kw, station_meta, coords))
-
-        results.sort(key=lambda r: r.z_score)
-        for i, r in enumerate(results):
-            r.rank = i + 1
-        return results[:3]
+        return results, all_evaluated
 
     # ── Result builder ────────────────────────────────────────────────
 
