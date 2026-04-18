@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import requests
 
-from planner.config import REPO_ROOT, TOMTOM_GEOCODE_BASE
+from planner.setup.config import REPO_ROOT, TOMTOM_GEOCODE_BASE
 
 
 def load_api_key() -> str:

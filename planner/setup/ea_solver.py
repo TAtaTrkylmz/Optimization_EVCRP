@@ -10,12 +10,12 @@ import random
 
 import numpy as np
 
-from planner.config import (
+from planner.setup.config import (
     ANXIETY_THRESHOLD, B_MAX, CHARGE_COST_PER_PCT, CHARGE_STEP_PCT,
     DC_EFFICIENCY, EA_CROSSOVER_RATE, EA_GENERATIONS, EA_MUTATION_RATE,
     EA_POP_SIZE, EA_TOURNAMENT_K, UserPreferences,
 )
-from planner.models import ChargingStop, RouteResult
+from planner.setup.models import ChargingStop, RouteResult
 
 
 # ---------------------------------------------------------------------------
@@ -419,12 +419,14 @@ def solve(
     # Sort all evaluated solutions
     all_evaluated.sort(key=lambda d: d["z"])
 
-    # Build best RouteResult
-    best = all_evaluated[0]
-    best_route = build_result(
-        1, best["path"], best["charge_map"],
-        energy_mat, time_mat, station_kw, station_meta, coords, prefs,
-    )
+    # Build best RouteResult if any exist
+    best_route = None
+    if all_evaluated:
+        best = all_evaluated[0]
+        best_route = build_result(
+            1, best["path"], best["charge_map"],
+            energy_mat, time_mat, station_kw, station_meta, coords, prefs,
+        )
 
     return best_route, all_evaluated, best_per_gen
 

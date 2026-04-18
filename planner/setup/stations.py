@@ -6,7 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from planner.config import DATA_CSV, MAX_CROSS_TRACK_KM, MAX_STATIONS_IN_MODEL
+from planner.setup.config import DATA_CSV, MAX_CROSS_TRACK_KM, MAX_STATIONS_IN_MODEL
 
 
 def load_stations() -> pd.DataFrame:
@@ -15,11 +15,11 @@ def load_stations() -> pd.DataFrame:
         raise FileNotFoundError(f"Missing station data: {DATA_CSV}")
     df = pd.read_csv(DATA_CSV)
     df = df.dropna(subset=["Latitude", "Longitude"])
-    return df.groupby("Station Id", as_index=False).agg({
+    return df.groupby("İstasyon No", as_index=False).agg({
         "Latitude": "first",
         "Longitude": "first",
-        "Socket Power (kW)": "max",
-        "Station Name": "first",
+        "Soket Gücü (kW)": "max",
+        "İstasyon Adı": "first",
     })
 
 
@@ -51,15 +51,15 @@ def filter_corridor(
     rows = []
     for idx in np.where(mask)[0]:
         r = stations.iloc[idx]
-        kw = float(r["Socket Power (kW)"]) if pd.notna(r["Socket Power (kW)"]) else 22.0
+        kw = float(r["Soket Gücü (kW)"]) if pd.notna(r["Soket Gücü (kW)"]) else 22.0
         rows.append({
             "t": float(t[idx]),
             "cross_km": float(cross_km[idx]),
             "lat": float(r["Latitude"]),
             "lon": float(r["Longitude"]),
             "max_kw": kw,
-            "id": r["Station Id"],
-            "name": r["Station Name"] if pd.notna(r["Station Name"]) else "",
+            "id": r["İstasyon No"],
+            "name": r["İstasyon Adı"] if pd.notna(r["İstasyon Adı"]) else "",
         })
     if not rows:
         return pd.DataFrame()
