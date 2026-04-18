@@ -1,41 +1,39 @@
-# Optimization_EVCRP
+# Personalized EV Route Planner 🚗⚡
 
-EV charging route / optimization work (MILP tests, route evaluation, EPDK geocoding scripts).
+An advanced multi-destination route optimizer for Electric Vehicles. It uses **Evolutionary Computing** and a **Dynamic Drag Model** to balance travel time, charging costs, and range anxiety based on user preferences.
 
-## Repository layout
+## 🚀 Quick Start
 
-| Directory | Contents |
-|-----------|----------|
-| `api/` | Geocoding scripts (Nominatim, Google, TomTom) and API smoke tests |
-| `data/` | EPDK CSVs, geocoded outputs, checkpoints, intermediate extracts |
-| `doc/` | Setup and geocoding documentation |
-| `milp/` | MILP/DP solver experiments, route evaluation, and **[Izmir→Ankara real-data test](doc/IZMIR_ANKARA_ROUTE_TEST.md)** (`izmir_ankara_tomtom_epdk_test.py`) |
-| `util/` | Helpers: ungeocoded extract, split partial CSV into geocoded + missing |
-| `run_planner.py` | **[Personalizable EV Route Planner](doc/PERSONALIZABLE_PLANNER.md)** — CLI for optimal routing with user preferences |
-
-Run Python entrypoints from the **repository root** so paths resolve to `data/` correctly (for example `python run_planner.py --source "Izmir" --dest "Ankara" --battery-start 85 --battery-end 20`).
-
-## Setup
-
-**[doc/SETUP.md](doc/SETUP.md)** — create a `.venv`, install pinned dependencies from `requirements.txt`, and verify imports.
-
-## Geocoding
-
-**[doc/GEOCODING.md](doc/GEOCODING.md)** — how `data/epdk_data.csv` is geocoding process and outputs.
-
-## Personalizable EV Route Planning
-
-**[doc/PERSONALIZABLE_PLANNER.md](doc/PERSONALIZABLE_PLANNER.md)** — New NumPy-based dynamic programming planner with user-configurable priorities and battery targets.
+Run the planner from the repository root:
 
 ```bash
-python run_planner.py --source "Izmir, Turkey" --dest "Ankara, Turkey" --battery-start 85 --battery-end 20
+python -m planner.main --source "Izmir, Turkey" --destinations "Ankara, Turkey" "Istanbul, Turkey" --battery-start 85 --battery-end 20
 ```
 
-## Izmir → Ankara MILP (Legacy)
+## 🛠 Project Mechanism
 
-**[doc/IZMIR_ANKARA_ROUTE_TEST.md](doc/IZMIR_ANKARA_ROUTE_TEST.md)** — TomTom + `geocoded_epdk_data.csv` + MILP solve using PuLP. (old)
+The planner doesn't just find the shortest path; it evolves an optimal **charging strategy** using **Real Data** and a robust **Mathematical Model**.
 
-## Requirements
+1.  **Selection & Real Data (EPDK)**: The system utilizes official **EPDK (Energy Market Regulatory Authority of Turkey)** data—over 14,000 real charging sockets. It ignores "mock" values using actual TomTom API road coordinates.
+2.  **Simulation & Math Model**: Each route is a candidate solution to a Mixed-Integer optimization problem. It minimizes a **Z-score**:
+    - **Time**: $(T_{drive} + T_{charge}) \cdot Weight$
+    - **Cost**: Total TL cost $\cdot$ Weight
+    - **Anxiety**: Low battery penalty below 20% $\cdot$ Weight
+3.  **Iteration (Evolution)**: Over 100 generations, routes "recombine" and "mutate." The solver handles complex constraints like $B_{floor} \le Battery \le B_{ceil}$ across thousands of station permutations.
+4.  **Dynamic Eco-Fallback**: Vehicle velocity (up to 140 km/h) is adjusted per segment. If a high speed is physically impossible for a specific leg between chargers, the system auto-falls back to "Eco-speed" (70 km/h).
+5.  **Multi-Leg ALNS**: For trips with multiple destinations, an **Adaptive Large Neighborhood Search (ALNS)** inspired orchestrator manages battery "handoffs" between cities to optimize the global journey efficiency.
 
+## 📂 Repository Structure
+
+- `planner/`: The core Python package.
+  - `main.py`: CLI entry point.
+  - `pipeline.py`: Orchestrates multi-leg journeys and ALNS.
+  - `setup/`: Computational engine (EA solver, math model, TomTom API).
+- `data/`: Real Geocoded EPDK charging station database.
+- `output/`: Generated maps and convergence plots.
+- `doc/`: Mathematical model formulations and technical background.
+- `requirements.txt`: Project dependencies.
+
+## 📧 Requirements
 - Python 3.10+
-- See `requirements.txt` (installed inside a virtual environment).
+- TomTom API Key (configured in `.env`)
