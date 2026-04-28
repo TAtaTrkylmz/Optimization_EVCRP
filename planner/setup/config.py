@@ -35,7 +35,7 @@ MAX_STATIONS_IN_MODEL = 40
 # ── Evolutionary algorithm ──
 CHARGE_STEP_PCT = 5               # charge granularity (%)
 EA_POP_SIZE = 60
-EA_GENERATIONS = 100
+EA_GENERATIONS = 300
 EA_MUTATION_RATE = 0.35
 EA_CROSSOVER_RATE = 0.6
 EA_TOURNAMENT_K = 3

@@ -18,11 +18,12 @@ Usage:
 """
 from __future__ import annotations
 
+import time
 import numpy as np
 
 from planner.setup.config import UserPreferences
 from planner.setup.models import LegResult, MultiLegResult
-from planner.setup.tomtom import load_api_key, geocode, route_summary
+from planner.setup.tomtom import load_api_key, geocode, route_summary, route_with_geometry
 from planner.setup.stations import load_stations, filter_corridor, build_node_list
 from planner.setup.matrices import haversine_matrix, build_cost_matrices
 from planner.setup import ea_solver
@@ -101,6 +102,7 @@ def plan_single_leg(
     stations,
     api_key: str,
     leg_index: int = 0,
+    live_traffic: bool = False,
 ) -> LegResult:
     """Plan a single leg from origin to destination.
 
@@ -114,47 +116,59 @@ def plan_single_leg(
         stations:         pre-loaded station DataFrame
         api_key:          TomTom API key
         leg_index:        0-based leg number
+        live_traffic:     whether to check live traffic instead of historical cache
 
     Returns:
         LegResult with route, convergence, and visualization data.
     """
     prefix = f"  [Leg {leg_index + 1}]"
+    t0 = time.perf_counter()
 
     # 1. TomTom route summary
     print(f"{prefix} Fetching route: {origin_name} -> {dest_name}")
-    road_km, drive_min = _get_route_info(lat_o, lon_o, lat_d, lon_d, api_key)
+    road_km, drive_min = route_summary(lat_o, lon_o, lat_d, lon_d, api_key, use_cache=True, live_traffic=live_traffic)
+    print(f"       -> {road_km:.1f} km, {drive_min:.1f} min  [{time.perf_counter()-t0:.2f}s]")
 
     # 2. Filter corridor stations
+    t1 = time.perf_counter()
     print(f"{prefix} Filtering corridor stations...")
     corridor_df = _filter_stations(stations, lat_o, lon_o, lat_d, lon_d)
+    print(f"       [{time.perf_counter()-t1:.2f}s]")
 
     # 3. Build matrices
+    t2 = time.perf_counter()
     print(f"{prefix} Building matrices...")
     coords, station_kw, station_meta, n, dist_mat, crow_total = \
         _build_matrices(lat_o, lon_o, lat_d, lon_d, corridor_df, prefs)
 
     rf = road_km / max(crow_total, 1e-3)
 
-    # 3. Build Cost Matrices using Dynamic Eco-Routing Fallback
-    print(f"{prefix} Building arrays with dynamic eco-fallback...")
-    e_mat, t_mat = build_cost_matrices(
+    # 3b. Build Cost Matrices using Dynamic Eco-Routing Fallback
+    print(f"{prefix} Building cost matrices (with road cache)...")
+    e_mat, t_mat, road_km_mat = build_cost_matrices(
         dist_mat, rf,
         prefs.consumption_kwh_per_100km,
         prefs.battery_capacity_kwh,
         target_velocity_kmh=prefs.velocity_kmh,
+        coords=coords,
+        api_key=api_key,
+        live_traffic=live_traffic
     )
-    print(f"       -> {n} nodes, target velocity={prefs.velocity_kmh:.0f} km/h")
+    print(f"       -> {n} nodes, target velocity={prefs.velocity_kmh:.0f} km/h  [{time.perf_counter()-t2:.2f}s]")
 
     # 4. Create a temporary prefs copy with this leg's battery_start
     is_final_leg = (leg_index == len(prefs.destinations) - 1)
     leg_prefs = _make_leg_prefs(prefs, battery_start_pct, is_final_leg)
 
     # 5. Run EA solver
+    t3 = time.perf_counter()
     print(f"{prefix} Running EA optimisation...")
     kw_arr = np.array([0.0] + station_kw + [0.0])
     best_route, all_evaluated, convergence = ea_solver.solve(
         n, e_mat, t_mat, kw_arr, station_meta, coords, leg_prefs,
     )
+
+    print(f"       -> EA done  [{time.perf_counter()-t3:.2f}s]")
 
     if not all_evaluated:
         raise RuntimeError(
@@ -162,6 +176,20 @@ def plan_single_leg(
             f"The vehicle might not have enough range to reach the first station from the origin. "
             f"Velocity was {prefs.velocity_kmh:.0f} km/h (consumption x{prefs.consumption_multiplier:.2f})."
         )
+
+    # 6. Fetch road geometry for the traveled edges (only 2-5 API calls)
+    t4 = time.perf_counter()
+    print(f"{prefix} Fetching road geometry for traveled path...")
+    path = best_route.path_node_indices
+    route_geometries: dict[tuple[int,int], list[tuple[float,float]]] = {}
+    for step in range(len(path) - 1):
+        ni, nj = path[step], path[step + 1]
+        lat1, lon1 = coords[ni]
+        lat2, lon2 = coords[nj]
+        geo = route_with_geometry(lat1, lon1, lat2, lon2, api_key)
+        route_geometries[(ni, nj)] = geo
+    print(f"       -> {len(route_geometries)} road segments fetched  [{time.perf_counter()-t4:.2f}s]")
+    print(f"       -> Leg total: {time.perf_counter()-t0:.2f}s")
         
     return LegResult(
         leg_index=leg_index,
@@ -173,7 +201,9 @@ def plan_single_leg(
         coords=coords,
         station_meta=station_meta,
         dist_mat=dist_mat,
+        road_km_mat=road_km_mat,
         road_factor=rf,
+        route_geometries=route_geometries,
     )
 
 
@@ -203,7 +233,7 @@ def _make_leg_prefs(prefs: UserPreferences, battery_start: float, is_final_leg: 
 # Multi-leg planner
 # ---------------------------------------------------------------------------
 
-def plan_journey(prefs: UserPreferences) -> MultiLegResult:
+def plan_journey(prefs: UserPreferences, live_traffic: bool = False) -> MultiLegResult:
     """Plan the full multi-leg journey.
 
     Steps:
@@ -240,16 +270,19 @@ def plan_journey(prefs: UserPreferences) -> MultiLegResult:
     print(f"{'='*60}\n")
 
     # Step 1: Geocode all waypoints
+    t_start = time.perf_counter()
     print("[1] Geocoding all waypoints...")
     wp_coords: list[tuple[float, float]] = []
     for i, wp in enumerate(waypoints):
         print(f"  [{i+1}/{len(waypoints)}] {wp}")
         wp_coords.append(_geocode_location(wp, api_key))
+    print(f"    [{time.perf_counter()-t_start:.2f}s]")
 
     # Step 2: Load stations once
+    t_step2 = time.perf_counter()
     print("\n[2] Loading charging station database...")
     stations = load_stations()
-    print(f"       -> {len(stations)} stations loaded")
+    print(f"       -> {len(stations)} stations loaded  [{time.perf_counter()-t_step2:.2f}s]")
 
     # Step 3: Plan each leg, chain battery SOC
     print(f"\n[3] Planning {n_legs} leg(s)...\n")
@@ -282,6 +315,7 @@ def plan_journey(prefs: UserPreferences) -> MultiLegResult:
             stations=stations,
             api_key=api_key,
             leg_index=i,
+            live_traffic=live_traffic,
         )
         legs.append(leg)
 
