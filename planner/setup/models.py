@@ -57,7 +57,9 @@ class LegResult:
     coords: Any = None                     # list[tuple[float, float]]
     station_meta: Any = None               # list[tuple[str, str]]
     dist_mat: Any = None                   # np.ndarray
+    road_km_mat: Any = None                # np.ndarray — real road km per edge
     road_factor: float = 1.0
+    route_geometries: Any = None           # dict[(i,j)] -> list[(lat,lon)] road polylines
 
 
 @dataclass

@@ -357,6 +357,9 @@ def solve(
     seen: set[tuple] = set()
     all_evaluated: list[dict] = []
     best_per_gen: list[float] = []
+    
+    no_improve_count = 0
+    global_best_z = INF
 
     def _key(stops):
         return tuple(sorted((idx, round(q)) for idx, q in stops))
@@ -409,12 +412,24 @@ def solve(
 
         best_z = min(fitnesses)
         best_per_gen.append(best_z if best_z < INF else float("nan"))
+        
+        # Early stopping tracking
+        if best_z < global_best_z - 0.01:
+            global_best_z = best_z
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
 
-        if (gen + 1) % 20 == 0 or gen == 0:
+        if (gen + 1) % 20 == 0 or gen == 0 or no_improve_count >= 50 or gen == EA_GENERATIONS - 1:
             feas = sum(1 for f in fitnesses if f < INF)
             print(f"       gen {gen+1:>3}/{EA_GENERATIONS}: "
                   f"best Z={best_z:.1f}  feasible={feas}/{len(population)}  "
                   f"unique={len(all_evaluated)}")
+                  
+        # Break if no improvement for 50 generations
+        if no_improve_count >= 50:
+            print(f"       -> Early stopping at gen {gen+1} (no improvement for 50 gens)")
+            break
 
     # Sort all evaluated solutions
     all_evaluated.sort(key=lambda d: d["z"])

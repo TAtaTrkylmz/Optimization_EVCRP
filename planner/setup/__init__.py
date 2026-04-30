@@ -12,8 +12,7 @@ from planner.setup.stations import load_stations, filter_corridor, build_node_li
 from planner.setup.matrices import haversine_matrix, build_cost_matrices
 from planner.setup import ea_solver
 from planner.setup.visualization import (
-    plot_route, plot_zscore_convergence,
-    plot_multi_leg, plot_multi_leg_convergence,
+    show_all_plots
 )
 
 __all__ = [
@@ -23,6 +22,5 @@ __all__ = [
     "load_stations", "filter_corridor", "build_node_list",
     "haversine_matrix", "build_cost_matrices",
     "ea_solver",
-    "plot_route", "plot_zscore_convergence",
-    "plot_multi_leg", "plot_multi_leg_convergence",
+    "show_all_plots",
 ]

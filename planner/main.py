@@ -30,10 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from planner.setup.config import UserPreferences
 from planner.pipeline import plan_journey
-from planner.setup.visualization import (
-    plot_route, plot_zscore_convergence,
-    plot_multi_leg, plot_multi_leg_convergence,
-)
+from planner.setup.visualization import show_all_plots
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Never drop below this %% during travel (default: 0)")
     p.add_argument("--battery-ceil", type=float, default=100.0,
                    help="Never charge above this %% during travel (default: 100)")
+    p.add_argument("--live-traffic", action="store_true",
+                   help="Fetch real-world live traffic when planning routes (slower, hits API limits).")
     p.add_argument("-o", "--output", type=Path, default=None,
                    help="Write summary to a text file")
     return p
@@ -146,7 +145,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Run the pipeline
     try:
-        result = plan_journey(prefs)
+        result = plan_journey(prefs, live_traffic=args.live_traffic)
     except RuntimeError as e:
         print(f"\n[!] PLANNING FAILED:")
         print(f"    {e}")
@@ -172,13 +171,8 @@ def main(argv: list[str] | None = None) -> None:
     save_dir = Path("output")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save composite multi-leg map
-    multi_route_save = save_dir / f"{save_name}_full_journey_map.png"
-    plot_multi_leg(result, save_path=multi_route_save)
-
-    # Save multi-leg convergence (all legs on one plot)
-    multi_conv_save = save_dir / f"{save_name}_all_convergence.png"
-    plot_multi_leg_convergence(result, save_path=multi_conv_save)
+    # Show all maps and plots (individual legs, combined, and convergence)
+    show_all_plots(result, save_dir=save_dir, save_name=save_name)
 
 
 if __name__ == "__main__":

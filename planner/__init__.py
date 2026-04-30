@@ -23,10 +23,7 @@ from planner.setup.models import (
     RouteResult, ChargingStop, LegResult, MultiLegResult,
 )
 from planner.pipeline import plan_journey
-from planner.setup.visualization import (
-    plot_route, plot_zscore_convergence,
-    plot_multi_leg, plot_multi_leg_convergence,
-)
+from planner.setup.visualization import show_all_plots
 
 __all__ = [
     "UserPreferences",
@@ -35,8 +32,5 @@ __all__ = [
     "LegResult",
     "MultiLegResult",
     "plan_journey",
-    "plot_route",
-    "plot_zscore_convergence",
-    "plot_multi_leg",
-    "plot_multi_leg_convergence",
+    "show_all_plots",
 ]
