@@ -25,6 +25,9 @@ class ChargingStop:
     battery_on_departure_pct: float
     charge_time_min: float
     charge_cost: float
+    wait_time_min: float = 0.0
+    arrival_time_min: float = 0.0
+    departure_time_min: float = 0.0
 
 
 @dataclass
@@ -35,6 +38,7 @@ class RouteResult:
     stops: list[ChargingStop]
     total_drive_time_min: float
     total_charge_time_min: float
+    total_wait_time_min: float
     total_time_min: float
     total_cost: float
     z_score: float
@@ -76,8 +80,12 @@ class MultiLegResult:
         return sum(leg.route.total_charge_time_min for leg in self.legs)
 
     @property
+    def total_wait_time_min(self) -> float:
+        return sum(getattr(leg.route, 'total_wait_time_min', 0.0) for leg in self.legs)
+
+    @property
     def total_time_min(self) -> float:
-        return self.total_drive_time_min + self.total_charge_time_min
+        return self.total_drive_time_min + self.total_charge_time_min + self.total_wait_time_min
 
     @property
     def total_cost(self) -> float:
