@@ -36,6 +36,40 @@ Because looking up thousands of road edges in real-time is extremely slow (and h
 2. **Run the planner:** Just run the planner normally! It will **automatically and silently** pull exact roads from the DB (under 0.1s processing time) and smoothly fall back to Haversine physics approximations for any edges not present in the DB. The CLI output will now explicitly report exactly how many edges were loaded from your Cache!
    *(Note: Avoid using `--live-traffic` unless specifically needed for real-time congestion analysis, as it will bypass the fast cache and fetch thousands of pairs individually, which can cause significant execution delays and API limit crashes).*
 
+## 🔎 EV Database Scraper
+
+To scrape EV models from EV Database with your custom filters (and manually solve CAPTCHA when needed), use:
+
+```bash
+python api/scrape_ev_database.py --url "https://ev-database.org/#group=vehicle-group&rs-pr=10000_100000&rs-er=0_1000&rs-ld=0_1000&rs-ac=2_23&rs-dcfc=0_400&rs-ub=10_200&rs-tw=0_3000&rs-ef=100_350&rs-sa=-1_5&rs-w=1000_3500&rs-c=0_5000&rs-y=2010_2030&s=1&p=0-50"
+```
+
+Pagination note: EV Database uses `p=pageIndex-pageSize` (e.g. `0-50`, `1-50`, `2-50`), not offset ranges.
+
+The script runs a visible browser, pauses for manual CAPTCHA solve when detected, paginates through listing pages, and writes:
+
+- `data/ev_database_vehicles.json`
+- `data/ev_database_vehicles.csv`
+
+Prerequisite (one-time):
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
+
+For full detail pages from scratch (writes to separate files):
+
+```bash
+python api/scrape_ev_database_details.py --url "https://ev-database.org/#group=vehicle-group&rs-pr=10000_100000&rs-er=0_1000&rs-ld=0_1000&rs-ac=2_23&rs-dcfc=0_400&rs-ub=10_200&rs-tw=0_3000&rs-ef=100_350&rs-sa=-1_5&rs-w=1000_3500&rs-c=0_5000&rs-y=2010_2030&s=1&p=0-50" --max-pages 27
+```
+
+This generates:
+
+- `data/ev_database_car_links.json`
+- `data/ev_database_car_details.json`
+- `data/ev_database_car_details.csv`
+
 ## 📂 Repository Structure
 
 - `planner/`: The core Python package.
