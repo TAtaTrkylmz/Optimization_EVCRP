@@ -3,6 +3,11 @@ Visualisation: route map and Z-score convergence plot.
 
 Supports both single-leg and multi-leg route plotting.
 Uses contextily for OpenStreetMap tile backgrounds.
+
+Changes:
+  - No individual leg plots — only the combined journey map
+  - Journey details (duration, cost, etc.) shown on the combined map
+  - Weather squares rendered as semi-transparent coloured rectangles
 """
 from __future__ import annotations
 
@@ -75,104 +80,51 @@ def _draw_route_segment(ax, leg, step, i, j, color, show_km_label=True):
 
 
 # ---------------------------------------------------------------------------
-# Individual leg plot (one per window)
+# Weather square colours — red scale based on severity
 # ---------------------------------------------------------------------------
 
-def plot_single_leg_map(leg: LegResult) -> None:
-    """Plot a single leg on its own map window with tile background."""
-    import matplotlib.pyplot as plt
-    import matplotlib.patheffects as pe
-    from matplotlib.lines import Line2D
+def _weather_color(quality: float) -> str:
+    """Map weather quality (0-1) to a colour. Lower = worse = more red."""
+    # Interpolate from deep red (0.0) to light orange (0.8)
+    r = 1.0
+    g = quality * 0.8   # 0 -> 0, 0.8 -> 0.64
+    b = quality * 0.3   # 0 -> 0, 0.8 -> 0.24
+    return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
-    fig, ax = plt.subplots(figsize=(14, 9))
-    outline = [pe.withStroke(linewidth=3, foreground="white")]
 
-    coords = leg.coords
-    n = len(coords)
-    path = leg.route.path_node_indices
-    path_set = set(path)
-    stop_indices = {s.node_index for s in leg.route.stops}
-    color = _get_leg_color(leg.leg_index)
+def _draw_weather_squares(ax, weather_squares, legend_elems):
+    """Draw semi-transparent weather squares on the map and add to legend."""
+    import matplotlib.patches as mpatches
 
-    all_lons = [c[1] for c in coords]
-    all_lats = [c[0] for c in coords]
+    if not weather_squares:
+        return
 
-    # 1. Unused stations (dark grey)
-    for i in range(1, n - 1):
-        if i not in path_set:
-            ax.plot(coords[i][1], coords[i][0], "o", color="#9ca3af",
-                    markersize=5, zorder=2, alpha=0.6, markeredgecolor="#6b7280",
-                    markeredgewidth=0.3)
+    for idx, sq in enumerate(weather_squares):
+        width = sq.lon_max - sq.lon_min
+        height = sq.lat_max - sq.lat_min
+        color = _weather_color(sq.quality)
+        rect = mpatches.Rectangle(
+            (sq.lon_min, sq.lat_min), width, height,
+            linewidth=1.5, edgecolor=color, facecolor=color,
+            alpha=0.18, zorder=1, linestyle="--",
+        )
+        ax.add_patch(rect)
 
-    # 2. Route segments
-    for step in range(len(path) - 1):
-        i, j = path[step], path[step + 1]
-        _draw_route_segment(ax, leg, step, i, j, color, show_km_label=True)
+        # Add label at centre of the square
+        cx = sq.lon_min + width / 2
+        cy = sq.lat_min + height / 2
+        ax.text(cx, cy, f"q={sq.quality:.2f}", fontsize=7, ha="center", va="center",
+                color=color, fontweight="bold", alpha=0.7, zorder=2)
 
-    # 3. Origin
-    ax.plot(coords[0][1], coords[0][0], marker="*", color="#16a34a",
-            markersize=22, zorder=12, markeredgecolor="white", markeredgewidth=1.0)
-    ax.annotate(leg.origin.split(',')[0], xy=(coords[0][1], coords[0][0]),
-                xytext=(12, -18), textcoords="offset points",
-                fontsize=10, fontweight="bold", color="#166534",
-                path_effects=outline, zorder=13)
-
-    # 4. Destination
-    ax.plot(coords[-1][1], coords[-1][0], marker="s", color="#dc2626",
-            markersize=16, zorder=12, markeredgecolor="white", markeredgewidth=1.0)
-    ax.annotate(leg.destination.split(',')[0], xy=(coords[-1][1], coords[-1][0]),
-                xytext=(-12, 14), textcoords="offset points",
-                fontsize=10, fontweight="bold", color="#991b1b",
-                ha="right", va="bottom", path_effects=outline, zorder=13)
-
-    # 5. Charging stops
-    for si, s in enumerate(leg.route.stops):
-        i = s.node_index
-        ax.plot(coords[i][1], coords[i][0], "o", color=color,
-                markersize=12, zorder=11, markeredgecolor="white", markeredgewidth=1.0)
-        label = (f"{s.station_name[:25]}\n"
-                 f"+{s.charge_amount_pct:.0f}%  {s.charge_time_min:.0f}min")
-        y_off = 16 if si % 2 == 0 else -16
-        va = "bottom" if si % 2 == 0 else "top"
-        ax.annotate(label, xy=(coords[i][1], coords[i][0]),
-                    xytext=(10, y_off), textcoords="offset points",
-                    fontsize=7.5, color="#1e3a5f", va=va,
-                    path_effects=outline, zorder=14)
-
-    # 6. Styling + basemap
-    pad_lon = (max(all_lons) - min(all_lons)) * 0.15 + 0.01
-    pad_lat = (max(all_lats) - min(all_lats)) * 0.15 + 0.005
-    ax.set_xlim(min(all_lons) - pad_lon, max(all_lons) + pad_lon)
-    ax.set_ylim(min(all_lats) - pad_lat, max(all_lats) + pad_lat)
-
-    _add_basemap(ax)
-
-    ax.set_xlabel("Longitude", fontsize=10)
-    ax.set_ylabel("Latitude", fontsize=10)
-    ax.set_title(
-        f"Leg {leg.leg_index + 1}: {leg.origin.split(',')[0]} → {leg.destination.split(',')[0]}\n"
-        f"Z={leg.route.z_score:.1f}  |  {leg.route.total_time_min:.0f} min  |  "
-        f"{leg.route.total_cost:.0f} TL  |  dest SOC {leg.route.battery_at_destination_pct:.0f}%",
-        fontsize=11, fontweight="bold",
+    # Add a single legend entry for weather zones
+    legend_elems.append(
+        mpatches.Patch(facecolor="#ff4444", alpha=0.18, edgecolor="#ff4444",
+                       linestyle="--", label=f"Weather Zone ({len(weather_squares)} zones)")
     )
 
-    legend_elems = [
-        Line2D([0], [0], marker="*", color="w", markerfacecolor="#16a34a",
-               markersize=14, label="Origin"),
-        Line2D([0], [0], marker="s", color="w", markerfacecolor="#dc2626",
-               markersize=10, label="Destination"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
-               markersize=9, label="Charging Stop"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#9ca3af",
-               markersize=6, label="Unused Station"),
-        Line2D([0], [0], color=color, linewidth=2.5, label="Vehicle Path"),
-    ]
-    ax.legend(handles=legend_elems, loc="lower left", fontsize=8, framealpha=0.9)
-    fig.tight_layout()
-
 
 # ---------------------------------------------------------------------------
-# Combined multi-leg map (saved)
+# Combined multi-leg map with journey details (the MAIN plot)
 # ---------------------------------------------------------------------------
 
 def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -> None:
@@ -182,6 +134,8 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
     - Unused stations: dark grey circles  
     - Road polylines from cache
     - Tile map background
+    - Journey details (duration, cost, Z-score) displayed as a text box
+    - Weather squares rendered as semi-transparent overlays
     """
     import matplotlib.pyplot as plt
     import matplotlib.patheffects as pe
@@ -199,7 +153,11 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
         path_set = set(leg.route.path_node_indices)
         all_path_nodes[leg.leg_index] = path_set
 
-    # 1. Base map: draw all unused corridor stations
+    # 1. Draw weather squares FIRST (lowest z-order)
+    legend_elems = []
+    _draw_weather_squares(ax, multi.weather_squares, legend_elems)
+
+    # 2. Base map: draw all unused corridor stations
     for leg in multi.legs:
         path_set = all_path_nodes[leg.leg_index]
         n = len(leg.coords)
@@ -217,7 +175,7 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
         all_lats.append(leg.coords[-1][0])
         all_lons.append(leg.coords[-1][1])
 
-    # 2. Draw each leg's route
+    # 3. Draw each leg's route
     for leg_idx, leg in enumerate(multi.legs):
         color = _get_leg_color(leg_idx)
         path = leg.route.path_node_indices
@@ -237,7 +195,7 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
                         xytext=(6, 8), textcoords="offset points",
                         fontsize=7, color="#1e3a5f", path_effects=outline, zorder=14)
 
-    # 3. Draw Waypoints (Origins & Final Destination)
+    # 4. Draw Waypoints (Origins & Final Destination)
     for leg_idx, leg in enumerate(multi.legs):
         c = leg.coords[0]
         ax.plot(c[1], c[0], marker="*", color="#16a34a",
@@ -254,7 +212,7 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
                         xytext=(0, 14), textcoords="offset points",
                         fontsize=9, fontweight="bold", ha="center", path_effects=outline, zorder=16)
 
-    # 4. Styling + basemap
+    # 5. Styling + basemap
     if all_lons and all_lats:
         pad_lon = (max(all_lons) - min(all_lons)) * 0.12 + 0.01
         pad_lat = (max(all_lats) - min(all_lats)) * 0.12 + 0.005
@@ -265,11 +223,21 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
 
     ax.set_xlabel("Longitude", fontsize=10)
     ax.set_ylabel("Latitude", fontsize=10)
-    ax.set_title(f"Full Journey: {multi.itinerary}\n(Real road distances from DB cache)",
-                 fontsize=12, fontweight="bold")
 
-    # Build legend with one entry per leg colour
-    legend_elems = [
+    # 6. Title with journey details
+    ax.set_title(
+        f"Full Journey: {multi.itinerary}\n"
+        f"Total: {multi.total_time_min:.0f} min  |  "
+        f"Drive: {multi.total_drive_time_min:.0f} min  |  "
+        f"Charge: {multi.total_charge_time_min:.0f} min  |  "
+        f"Cost: {multi.total_cost:.0f} TL  |  "
+        f"Z: {multi.total_z_score:.1f}  |  "
+        f"Final SOC: {multi.battery_at_final_dest:.0f}%",
+        fontsize=11, fontweight="bold",
+    )
+
+    # 7. Build legend
+    base_legend = [
         Line2D([0], [0], marker="*", color="w", markerfacecolor="#16a34a",
                markersize=14, label="Waypoint"),
         Line2D([0], [0], marker="s", color="w", markerfacecolor="#dc2626",
@@ -279,9 +247,32 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
     ]
     for leg_idx, leg in enumerate(multi.legs):
         c = _get_leg_color(leg_idx)
-        lbl = f"Leg {leg_idx+1}: {leg.origin.split(',')[0]}→{leg.destination.split(',')[0]}"
-        legend_elems.append(Line2D([0], [0], color=c, linewidth=2.5, label=lbl))
-    ax.legend(handles=legend_elems, loc="lower left", fontsize=8, framealpha=0.9)
+        lbl = (f"Leg {leg_idx+1}: {leg.origin.split(',')[0]}→{leg.destination.split(',')[0]}  "
+               f"({leg.route.total_time_min:.0f}m, {leg.route.total_cost:.0f}TL)")
+        base_legend.append(Line2D([0], [0], color=c, linewidth=2.5, label=lbl))
+
+    # Combine base legend + weather legend
+    all_legend = base_legend + legend_elems
+    ax.legend(handles=all_legend, loc="lower left", fontsize=8, framealpha=0.9)
+
+    # 8. Per-leg info box in top-right corner
+    info_lines = []
+    for leg in multi.legs:
+        r = leg.route
+        n_stops = len(r.stops)
+        info_lines.append(
+            f"Leg {leg.leg_index+1}: {leg.origin.split(',')[0]}→{leg.destination.split(',')[0]}  "
+            f"| {r.total_time_min:.0f} min | {r.total_cost:.0f} TL | "
+            f"{n_stops} stop{'s' if n_stops != 1 else ''} | "
+            f"SOC {r.battery_at_destination_pct:.0f}%"
+        )
+    info_text = "\n".join(info_lines)
+    ax.text(0.99, 0.99, info_text, transform=ax.transAxes,
+            fontsize=7.5, verticalalignment="top", horizontalalignment="right",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="white", alpha=0.85,
+                      edgecolor="#cccccc"),
+            zorder=20)
 
     fig.tight_layout()
 
@@ -289,7 +280,7 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
         p = Path(save_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(str(p), dpi=200, bbox_inches="tight")
-        print(f"  Multi-leg map saved: {p.resolve()}")
+        print(f"  Journey map saved: {p.resolve()}")
 
 
 # ---------------------------------------------------------------------------
@@ -362,27 +353,25 @@ def plot_multi_leg_convergence(
 # ---------------------------------------------------------------------------
 
 def show_all_plots(multi: MultiLegResult, save_dir: str | Path, save_name: str) -> None:
-    """Display all plots simultaneously in separate windows, then show combined.
+    """Display all plots simultaneously in separate windows.
     
     Windows:
-      - One per leg (individual leg map with basemap)
-      - One combined multi-leg map (saved to disk)
+      - One combined multi-leg map with journey details and weather (saved to disk)
       - One convergence plot for all legs (saved to disk)
+    
+    NOTE: Individual leg plots have been removed. All details are shown on
+    the combined map via the title, legend, and info box.
     """
     import matplotlib.pyplot as plt
 
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Individual leg plots (display only, not saved)
-    for leg in multi.legs:
-        plot_single_leg_map(leg)
-
-    # 2. Combined multi-leg map (saved)
+    # 1. Combined multi-leg map with details and weather (saved)
     multi_route_save = save_dir / f"{save_name}_full_journey_map.png"
     plot_multi_leg(multi, save_path=multi_route_save)
 
-    # 3. Convergence plot (saved)
+    # 2. Convergence plot (saved)
     multi_conv_save = save_dir / f"{save_name}_all_convergence.png"
     plot_multi_leg_convergence(multi, save_path=multi_conv_save)
 

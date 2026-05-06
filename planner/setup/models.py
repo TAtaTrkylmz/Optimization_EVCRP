@@ -43,6 +43,7 @@ class RouteResult:
     total_cost: float
     z_score: float
     battery_at_destination_pct: float
+    is_partial: bool = False            # True when route couldn't reach destination
 
     # NOTE: POI-based suggestions will be added once the POI CSV data is ready.
     # The logic skeleton is kept commented in ea_solver.py _build_result.
@@ -70,6 +71,7 @@ class LegResult:
 class MultiLegResult:
     """Aggregated result for the entire multi-leg journey."""
     legs: list[LegResult]
+    weather_squares: list = field(default_factory=list)  # list[WeatherSquare] from mocker
 
     @property
     def total_drive_time_min(self) -> float:
