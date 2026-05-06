@@ -38,7 +38,7 @@ VELOCITY_EXPONENT = 1.6           # drag exponent for consumption scaling
 
 # ── Corridor ──
 MAX_CROSS_TRACK_KM = 120.0
-MAX_STATIONS_IN_MODEL = 40
+MAX_STATIONS_IN_MODEL = 80
 
 # ── Evolutionary algorithm ──
 CHARGE_STEP_PCT = 5               # charge granularity (%)
