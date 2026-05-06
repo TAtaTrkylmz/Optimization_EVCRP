@@ -21,12 +21,13 @@ from __future__ import annotations
 import time
 import numpy as np
 
-from planner.setup.config import UserPreferences
+from planner.setup.config import UserPreferences, BASE_VELOCITY_KMH, CRUISE_VELOCITY_KMH
 from planner.setup.models import LegResult, MultiLegResult
 from planner.setup.tomtom import load_api_key, geocode, route_summary, route_with_geometry
 from planner.setup.stations import load_stations, filter_corridor, build_node_list
 from planner.setup.matrices import haversine_matrix, build_cost_matrices
 from planner.setup import ea_solver
+from api.mocker import get_mock_weather, WeatherSquare
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,47 @@ def _print_zscore_table(all_evaluated):
         print(f"  ... ({len(all_evaluated) - 30} more omitted)")
     print(f"{'-'*64}\n")
 
+# ---------------------------------------------------------------------------
+# Partial route builder (for infeasible cases)
+# ---------------------------------------------------------------------------
+
+def _build_partial_route(
+    n: int,
+    energy_mat: np.ndarray,
+    prefs: UserPreferences,
+) -> tuple[list[int], float]:
+    """Build a partial route showing how far the vehicle can get.
+
+    Greedy hop-by-hop: from origin, visit consecutive stations,
+    charging to ceiling at each, until we can't reach the next one.
+
+    Returns:
+        (path_node_indices, battery_at_last_node)
+    """
+    battery = prefs.battery_start_pct
+    b_ceil = prefs.battery_max_enroute_pct
+    b_floor = prefs.battery_min_enroute_pct
+    path = [0]
+    current = 0
+
+    for j in range(1, n):
+        e = energy_mat[current, j]
+        if e > 900:   # unreachable edge
+            break
+        if battery - e < b_floor:
+            break
+        battery -= e
+        path.append(j)
+
+        # Charge at every station we visit (not at destination)
+        if j < n - 1:
+            charge = max(0.0, b_ceil - battery)
+            battery = min(battery + charge, b_ceil)
+
+        current = j
+
+    return path, round(battery, 1)
+
 
 # ---------------------------------------------------------------------------
 # Single-leg planner
@@ -103,6 +145,7 @@ def plan_single_leg(
     api_key: str,
     leg_index: int = 0,
     live_traffic: bool = False,
+    weather_squares: list[WeatherSquare] | None = None,
 ) -> LegResult:
     """Plan a single leg from origin to destination.
 
@@ -152,9 +195,13 @@ def plan_single_leg(
         target_velocity_kmh=prefs.velocity_kmh,
         coords=coords,
         api_key=api_key,
-        live_traffic=live_traffic
+        live_traffic=live_traffic,
+        weather_squares=weather_squares,
     )
-    print(f"       -> {n} nodes, target velocity={prefs.velocity_kmh:.0f} km/h  [{time.perf_counter()-t2:.2f}s]")
+    weather_info = ""
+    if weather_squares:
+        weather_info = f", {len(weather_squares)} weather zones active"
+    print(f"       -> {n} nodes, energy@{BASE_VELOCITY_KMH:.0f}km/h  time@{CRUISE_VELOCITY_KMH:.0f}km/h{weather_info}  [{time.perf_counter()-t2:.2f}s]")
 
     # 4. Create a temporary prefs copy with this leg's battery_start
     is_final_leg = (leg_index == len(prefs.destinations) - 1)
@@ -171,10 +218,55 @@ def plan_single_leg(
     print(f"       -> EA done  [{time.perf_counter()-t3:.2f}s]")
 
     if not all_evaluated:
-        raise RuntimeError(
-            f"No feasible route could be found for this leg! "
-            f"The vehicle might not have enough range to reach the first station from the origin. "
-            f"Velocity was {prefs.velocity_kmh:.0f} km/h (consumption x{prefs.consumption_multiplier:.2f})."
+        # Build a partial route showing how far we can get
+        print(f"{prefix} [!] No feasible route found! Building partial route...")
+        partial_path, partial_battery = _build_partial_route(
+            n, e_mat, leg_prefs
+        )
+        last_node = partial_path[-1] if partial_path else 0
+        last_coord = coords[last_node]
+        print(f"       -> Vehicle stranded at node {last_node} "
+              f"({last_coord[0]:.4f}, {last_coord[1]:.4f}) "
+              f"with {partial_battery:.1f}% battery")
+        
+        # Build a minimal RouteResult for the partial path
+        from planner.setup.models import RouteResult
+        partial_route = RouteResult(
+            rank=0,
+            path_node_indices=partial_path,
+            stops=[],
+            total_drive_time_min=0.0,
+            total_charge_time_min=0.0,
+            total_wait_time_min=0.0,
+            total_time_min=0.0,
+            total_cost=0.0,
+            z_score=float('inf'),
+            battery_at_destination_pct=partial_battery,
+            is_partial=True,
+        )
+        
+        # Fetch geometry for partial path
+        route_geometries = {}
+        for step in range(len(partial_path) - 1):
+            ni, nj = partial_path[step], partial_path[step + 1]
+            lat1, lon1 = coords[ni]
+            lat2, lon2 = coords[nj]
+            geo = route_with_geometry(lat1, lon1, lat2, lon2, api_key)
+            route_geometries[(ni, nj)] = geo
+        
+        return LegResult(
+            leg_index=leg_index,
+            origin=origin_name,
+            destination=dest_name,
+            route=partial_route,
+            convergence=convergence,
+            feasible_routes_found=0,
+            coords=coords,
+            station_meta=station_meta,
+            dist_mat=dist_mat,
+            road_km_mat=road_km_mat,
+            road_factor=rf,
+            route_geometries=route_geometries,
         )
 
     # 6. Fetch road geometry for the traveled edges (only 2-5 API calls)
@@ -233,12 +325,14 @@ def _make_leg_prefs(prefs: UserPreferences, battery_start: float, is_final_leg: 
 # Multi-leg planner
 # ---------------------------------------------------------------------------
 
-def plan_journey(prefs: UserPreferences, live_traffic: bool = False) -> MultiLegResult:
+def plan_journey(prefs: UserPreferences, live_traffic: bool = False,
+                 weather_seed: int = 42) -> MultiLegResult:
     """Plan the full multi-leg journey.
 
     Steps:
         1. Geocode all waypoints
         2. Load stations once (shared across all legs)
+        2b. Generate mock weather over Turkey
         3. Plan each leg sequentially, chaining battery SOC
         4. (Future) ALNS improvement
         5. Return aggregated MultiLegResult
@@ -259,8 +353,8 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False) -> MultiLeg
           f"  ceil={prefs.battery_max_enroute_pct:.0f}%")
     print(f"  Vehicle   : {prefs.battery_capacity_kwh} kWh,"
           f" {prefs.consumption_kwh_per_100km} kWh/100km")
-    print(f"  Velocity  : {prefs.velocity_kmh:.0f} km/h"
-          f" (consumption x{prefs.consumption_multiplier:.2f})")
+    print(f"  Velocity  : energy@{BASE_VELOCITY_KMH:.0f}km/h (eco)"
+          f"  time@{CRUISE_VELOCITY_KMH:.0f}km/h (cruise)")
     print(f"  Priorities: time={prefs.priority_time}"
           f"  cost={prefs.priority_cost}"
           f"  anxiety={prefs.priority_anxiety}")
@@ -283,6 +377,12 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False) -> MultiLeg
     print("\n[2] Loading charging station database...")
     stations = load_stations()
     print(f"       -> {len(stations)} stations loaded  [{time.perf_counter()-t_step2:.2f}s]")
+
+    # Step 2b: Generate mock weather over Turkey
+    weather_squares = get_mock_weather(seed=weather_seed)
+    print(f"\n[2b] Weather simulation (seed={weather_seed}): {len(weather_squares)} zones generated")
+    for sq in weather_squares:
+        print(f"       {sq}")
 
     # Step 3: Plan each leg, chain battery SOC
     print(f"\n[3] Planning {n_legs} leg(s)...\n")
@@ -316,6 +416,7 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False) -> MultiLeg
             api_key=api_key,
             leg_index=i,
             live_traffic=live_traffic,
+            weather_squares=weather_squares,
         )
         legs.append(leg)
 
@@ -332,7 +433,7 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False) -> MultiLeg
     legs = _alns_improve(legs, prefs)
 
     # Step 5: Aggregate
-    result = MultiLegResult(legs=legs)
+    result = MultiLegResult(legs=legs, weather_squares=weather_squares)
     _print_journey_summary(result)
 
     return result

@@ -16,6 +16,7 @@ from planner.setup.config import (
     EA_POP_SIZE, EA_TOURNAMENT_K, UserPreferences,
 )
 from planner.setup.models import ChargingStop, RouteResult
+from api.mocker import get_mock_station_occupancy
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +42,7 @@ def evaluate_plan(
     energy_mat: np.ndarray,
     time_mat: np.ndarray,
     station_kw: np.ndarray,
+    station_meta: list[tuple[str, str]],
     prefs: UserPreferences,
 ) -> tuple[float, dict | None]:
     """Simulate a charging plan and compute the Z-score.
@@ -63,8 +65,10 @@ def evaluate_plan(
     battery = prefs.battery_start_pct
     total_drive = 0.0
     total_ct = 0.0
+    total_wt = 0.0
     total_cc = 0.0
     total_anx = 0.0
+    current_time_min = 0.0
 
     for step in range(len(path) - 1):
         i, j = path[step], path[step + 1]
@@ -74,7 +78,14 @@ def evaluate_plan(
             if battery + q > b_ceil + 0.01:
                 return INF, None
             battery = min(battery + q, b_ceil)
-            total_ct += charge_time_min(q, float(station_kw[i]), cap)
+            
+            sid = station_meta[i - 1][0]
+            wt = get_mock_station_occupancy(sid, current_time_min)["wait_time_min"]
+            ct = charge_time_min(q, float(station_kw[i]), cap)
+            
+            total_wt += wt
+            total_ct += ct
+            current_time_min += wt + ct
             total_cc += q * CHARGE_COST_PER_PCT
 
         e = energy_mat[i, j]
@@ -83,12 +94,15 @@ def evaluate_plan(
             return INF, None
 
         total_anx += max(0.0, ANXIETY_THRESHOLD - battery)
-        total_drive += time_mat[i, j]
+        
+        drive_t = time_mat[i, j]
+        total_drive += drive_t
+        current_time_min += drive_t
 
     if battery < prefs.battery_end_min_pct - 0.01:
         return INF, None
 
-    z = (prefs.w_time * (total_drive + total_ct)
+    z = (prefs.w_time * (total_drive + total_ct + total_wt)
          + prefs.w_cost * total_cc
          + prefs.w_anxiety * total_anx)
 
@@ -97,6 +111,7 @@ def evaluate_plan(
         "charge_map": charge_map,
         "total_drive": total_drive,
         "total_ct": total_ct,
+        "total_wt": total_wt,
         "total_cc": total_cc,
         "battery_dest": battery,
         "z": z,
@@ -121,18 +136,22 @@ def build_result(
     """Convert a path + charge map into a full RouteResult."""
     n = len(coords)
     stops: list[ChargingStop] = []
-    total_drive = total_ct = total_cc = 0.0
+    total_drive = total_ct = total_wt = total_cc = 0.0
     battery = prefs.battery_start_pct
     cap = prefs.battery_capacity_kwh
+    current_time_min = 0.0
 
     for step in range(len(path) - 1):
         i, j = path[step], path[step + 1]
         q = charges.get(i, 0)
         if 0 < i < n and q > 0:
             kw = float(station_kw[i])
+            sid, sname = station_meta[i - 1]
+            
+            wt = get_mock_station_occupancy(sid, current_time_min)["wait_time_min"]
             ct = charge_time_min(q, kw, cap)
             cc = q * CHARGE_COST_PER_PCT
-            sid, sname = station_meta[i - 1]
+            
             stops.append(ChargingStop(
                 node_index=i, station_id=sid,
                 station_name=sname[:60] if sname else f"Station {sid}",
@@ -141,17 +160,25 @@ def build_result(
                 charge_amount_pct=round(q, 1),
                 battery_on_departure_pct=round(battery + q, 1),
                 charge_time_min=round(ct, 1), charge_cost=round(cc, 1),
+                wait_time_min=round(wt, 1),
+                arrival_time_min=round(current_time_min, 1),
+                departure_time_min=round(current_time_min + wt + ct, 1)
             ))
+            total_wt += wt
             total_ct += ct
             total_cc += cc
+            current_time_min += wt + ct
             battery += q
+            
+        drive_t = time_mat[i, j]
         battery -= energy_mat[i, j]
-        total_drive += time_mat[i, j]
+        total_drive += drive_t
+        current_time_min += drive_t
 
     # TODO: add POI-based suggestions once POI CSV is available.
     # See _generate_suggestions (commented out) for the logic skeleton.
 
-    z = (prefs.w_time * (total_drive + total_ct)
+    z = (prefs.w_time * (total_drive + total_ct + total_wt)
          + prefs.w_cost * total_cc
          + prefs.w_anxiety * sum(
              max(0, ANXIETY_THRESHOLD - s.battery_on_arrival_pct) for s in stops))
@@ -162,7 +189,8 @@ def build_result(
         stops=stops,
         total_drive_time_min=round(total_drive, 1),
         total_charge_time_min=round(total_ct, 1),
-        total_time_min=round(total_drive + total_ct, 1),
+        total_wait_time_min=round(total_wt, 1),
+        total_time_min=round(total_drive + total_ct + total_wt, 1),
         total_cost=round(total_cc, 1),
         z_score=round(z, 2),
         battery_at_destination_pct=round(max(0, battery), 1),
@@ -366,14 +394,14 @@ def solve(
 
     def _eval(stops):
         key = _key(stops)
-        z, det = evaluate_plan(stops, n, energy_mat, time_mat, station_kw, prefs)
+        z, det = evaluate_plan(stops, n, energy_mat, time_mat, station_kw, station_meta, prefs)
         if key not in seen and z < INF:
             seen.add(key)
             all_evaluated.append({
                 "z": z,
                 "stops": list(stops),
                 "n_stops": len([q for _, q in stops if q > 0]),
-                "total_time": det["total_drive"] + det["total_ct"],
+                "total_time": det["total_drive"] + det["total_ct"] + det["total_wt"],
                 "cost": det["total_cc"],
                 "dest_soc": det["battery_dest"],
                 "path": det["path"],

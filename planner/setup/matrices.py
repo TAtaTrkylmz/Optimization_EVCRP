@@ -1,15 +1,25 @@
 """
 NumPy matrix computations: haversine, energy, travel time.
 
-The energy matrix now accepts a consumption_multiplier from the
-velocity model (see config.py for the formula).
+Adaptive velocity model:
+    Energy -> ALWAYS at eco speed (70 km/h, multiplier 1.0)
+              This maximizes range and ensures all physically possible
+              routes are feasible. The system automatically "reduces speed"
+              to reach distant stations.
+
+    Time   -> At cruise speed (90 km/h) or TomTom real-world data.
+              This gives realistic travel time estimates for the Z-score.
+
+    Weather -> Applies a time multiplier (does NOT affect energy).
 """
 from __future__ import annotations
 
 import numpy as np
 
+from planner.setup.config import BASE_VELOCITY_KMH, CRUISE_VELOCITY_KMH
 from planner.setup.routing_cache import load_routes_bulk, _round_coord
 from planner.setup.tomtom import route_summary
+from api.mocker import WeatherSquare, get_segment_weather_penalty
 
 
 def haversine_matrix(coords: np.ndarray) -> np.ndarray:
@@ -28,25 +38,24 @@ def build_cost_matrices(
     road_factor: float,
     consumption_kwh_per_100km: float,
     battery_capacity_kwh: float,
-    target_velocity_kmh: float,
-    base_velocity_kmh: float = 70.0,
+    target_velocity_kmh: float = CRUISE_VELOCITY_KMH,
+    base_velocity_kmh: float = BASE_VELOCITY_KMH,
     coords: list[tuple[float, float]] = None,
     api_key: str = None,
-    live_traffic: bool = False
+    live_traffic: bool = False,
+    weather_squares: list[WeatherSquare] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Calculate Energy (%), Time (min), and Real-Road-KM matrices.
 
-    This implements "Dynamic Eco-Fallback" to completely untangle User Preferences from
-    Topological Feasibility. 
-      1. Default to Target Velocity (derived from w-time preference).
-      2. If target velocity causes Energy Requirement > 100% capacity, drop the speed
-         down to safe Eco Speed (70 km/h) for that specific segment.
-      3. If it STILL takes >100% at eco-speed, mark as physically unreachable.
-      4. Calculate time correctly using Distance / Velocity (or TomTom real-world time).
+    Adaptive velocity model:
+      - ENERGY is always computed at eco speed (70 km/h, multiplier 1.0)
+        to maximize range and ensure route feasibility.
+      - TIME is computed at cruise speed (90 km/h) or TomTom real-world data.
+      - If even eco speed can't handle an edge (>99% battery), mark unreachable.
+      - Weather penalties apply to TIME only (not energy).
 
     Returns:
-        (energy_mat, time_mat, road_km_mat) — road_km_mat contains actual km for
-        each edge (from cache or haversine fallback), used by visualization.
+        (energy_mat, time_mat, road_km_mat)
     """
     n = dist_mat.shape[0]
     energy_mat = np.zeros((n, n), dtype=float)
@@ -107,35 +116,36 @@ def build_cost_matrices(
             if dist_km < 1e-3:
                 continue
 
-            # ATTEMPT 1: Target Velocity
-            vel = target_velocity_kmh
-            mult = (vel / base_velocity_kmh) ** 1.6
+            # ── ENERGY: always at eco speed (70 km/h) ──
+            # This ensures maximum range and feasibility.
+            # No multiplier at eco speed (multiplier = 1.0).
             base_kwh = (dist_km / 100.0) * consumption_kwh_per_100km
-            
-            kwh_req = base_kwh * mult
-            energy_pct = (kwh_req / battery_capacity_kwh) * 100.0
-            
-            # ATTEMPT 2: Dynamic Eco-Fallback if it's too aggressive
-            if energy_pct > 99.0 and vel > base_velocity_kmh:
-                vel = base_velocity_kmh
-                mult = 1.0
-                kwh_req = base_kwh * mult
-                energy_pct = (kwh_req / battery_capacity_kwh) * 100.0
+            energy_pct = (base_kwh / battery_capacity_kwh) * 100.0
                 
             if energy_pct > 99.0:
+                # Even at eco speed, this edge is physically unreachable
                 energy_mat[i, j] = 1000.0
                 time_mat[i, j] = 10000.0
                 continue
                 
-            # Populate Matrices
             energy_mat[i, j] = energy_pct
             
-            # If we received a real-world time and target velocity is eco-speed, trust the API time.
-            # Otherwise use physics logic to represent speeding up.
-            if base_time_min is not None and vel <= base_velocity_kmh:
+            # ── TIME: at cruise speed (90 km/h) or TomTom real-world ──
+            if base_time_min is not None:
+                # Trust real-world time from TomTom/cache
                 time_mat[i, j] = base_time_min
             else:
-                time_mat[i, j] = (dist_km / vel) * 60.0
+                # Use cruise speed for time estimation
+                time_mat[i, j] = (dist_km / target_velocity_kmh) * 60.0
+
+            # Apply weather penalty to time only
+            if weather_squares and coords is not None:
+                wp = get_segment_weather_penalty(
+                    coords[i][0], coords[i][1],
+                    coords[j][0], coords[j][1],
+                    weather_squares,
+                )
+                time_mat[i, j] *= wp
 
     if coords is not None:
         total_edges = n * (n - 1)

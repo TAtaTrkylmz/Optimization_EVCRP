@@ -13,10 +13,11 @@ Example runs:
         --destinations "Balikesir, Turkey" "Eskisehir, Turkey" "Ankara, Turkey" "Istanbul, Turkey" \
         --battery-start 85 --battery-end 20 --w-time 5 --w-cost 3 --w-anxiety 2
 
-Velocity effect comparison:
-    w-time=1 -> 70 km/h, consumption x1.00
-    w-time=3 -> 105 km/h, consumption x1.93
-    w-time=5 -> 140 km/h, consumption x3.03
+DESIGN: Weights only PRIORITIZE — they never control physics.
+    --w-time    -> Z-score weight only (how much you care about time)
+    --w-cost    -> Z-score weight only (how much you care about cost)
+    --w-anxiety -> Z-score weight only (how much you care about range anxiety)
+    Velocity is a fixed vehicle constant (90 km/h), not user-controllable.
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 from planner.setup.config import UserPreferences
 from planner.pipeline import plan_journey
 from planner.setup.visualization import show_all_plots
+from api.mocker import set_occupancy_seed
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Priorities are integers 1-5 (1 = least, 5 = most).\n"
-            "Velocity is derived from w-time: 70 km/h (1) to 140 km/h (5).\n"
-            "Higher velocity -> more energy consumption via (v/70)^1.6 multiplier."
+            "They ONLY affect the Z-score ranking (which route is 'best').\n"
+            "They do NOT change driving speed, energy consumption, or feasibility.\n"
+            "Velocity is a fixed vehicle constant (90 km/h)."
         ),
     )
     p.add_argument("--source", required=True,
@@ -61,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Base kWh/100km at 70 km/h (default: 18)")
     p.add_argument("--w-time", type=int, default=3, choices=range(1, 6),
                    metavar="1-5",
-                   help="Time priority 1-5 (also sets velocity, default: 3)")
+                   help="Time priority 1-5 (default: 3)")
     p.add_argument("--w-cost", type=int, default=3, choices=range(1, 6),
                    metavar="1-5",
                    help="Cost priority 1-5 (default: 3)")
@@ -72,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Never drop below this %% during travel (default: 0)")
     p.add_argument("--battery-ceil", type=float, default=100.0,
                    help="Never charge above this %% during travel (default: 100)")
+    p.add_argument("--weather-seed", type=int, default=42,
+                   help="Random seed for mock weather generation (default: 42). "
+                        "Use the same seed to reproduce experiments.")
+    p.add_argument("--occupancy-seed", type=int, default=0,
+                   help="Seed offset for station occupancy randomization (default: 0).")
     p.add_argument("--live-traffic", action="store_true",
                    help="Fetch real-world live traffic when planning routes (slower, hits API limits).")
     p.add_argument("-o", "--output", type=Path, default=None,
@@ -119,7 +127,7 @@ def _build_save_name(prefs) -> str:
     src = prefs.source.replace(" ", "").replace(",", "")
     dst = prefs.final_destination.replace(" ", "").replace(",", "")
     return (f"{src}_to_{dst}"
-            f"_{prefs.priority_time}-{prefs.priority_cost}-{prefs.priority_anxiety}")
+            f"_w{prefs.priority_time}-{prefs.priority_cost}-{prefs.priority_anxiety}")
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +151,13 @@ def main(argv: list[str] | None = None) -> None:
         battery_max_enroute_pct=args.battery_ceil,
     )
 
+    # Set occupancy seed for reproducibility
+    set_occupancy_seed(args.occupancy_seed)
+
     # Run the pipeline
     try:
-        result = plan_journey(prefs, live_traffic=args.live_traffic)
+        result = plan_journey(prefs, live_traffic=args.live_traffic,
+                              weather_seed=args.weather_seed)
     except RuntimeError as e:
         print(f"\n[!] PLANNING FAILED:")
         print(f"    {e}")
@@ -171,7 +183,7 @@ def main(argv: list[str] | None = None) -> None:
     save_dir = Path("output")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Show all maps and plots (individual legs, combined, and convergence)
+    # Show all maps and plots (combined journey map + convergence)
     show_all_plots(result, save_dir=save_dir, save_name=save_name)
 
 

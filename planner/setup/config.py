@@ -2,10 +2,18 @@
 Constants and user preferences for the EV route planner.
 
 Velocity model:
-    velocity_kmh = 70 + (priority_time - 1) * 17.5   ->  [70, 140] km/h
-    consumption_multiplier = (velocity / 70) ^ 1.6
-    At 70 km/h  -> 1.0x  (baseline)
-    At 140 km/h -> ~3.03x (high-speed penalty)
+    Energy is ALWAYS computed at eco speed (BASE_VELOCITY_KMH = 70 km/h)
+    to ensure maximum range and route feasibility.
+
+    Time is computed at CRUISE speed (CRUISE_VELOCITY_KMH = 90 km/h)
+    or from real-world TomTom data when available.
+
+    This decoupling ensures:
+    - Feasibility is never affected by user weights
+    - The Z-score correctly captures the time/cost/anxiety tradeoff
+    - All physically possible routes are found by the EA
+
+DESIGN RULE: Priorities ONLY PRIORITIZE — they never CONTROL the physics.
 """
 from __future__ import annotations
 
@@ -24,13 +32,13 @@ CHARGE_COST_PER_PCT = 10.0        # flat TL per % charged
 DC_EFFICIENCY = 0.88
 
 # ── Velocity ──
-BASE_VELOCITY_KMH = 70.0         # w_time=1  (slow, efficient)
-MAX_VELOCITY_KMH = 140.0         # w_time=5  (fast, hungry)
+BASE_VELOCITY_KMH = 70.0         # eco speed — used for ENERGY computation
+CRUISE_VELOCITY_KMH = 90.0       # cruise speed — used for TIME computation
 VELOCITY_EXPONENT = 1.6           # drag exponent for consumption scaling
 
 # ── Corridor ──
 MAX_CROSS_TRACK_KM = 120.0
-MAX_STATIONS_IN_MODEL = 40
+MAX_STATIONS_IN_MODEL = 80
 
 # ── Evolutionary algorithm ──
 CHARGE_STEP_PCT = 5               # charge granularity (%)
@@ -44,19 +52,6 @@ EA_TOURNAMENT_K = 3
 TOMTOM_GEOCODE_BASE = "https://api.tomtom.com/search/2/geocode"
 
 
-# ── Helper: velocity from priority ──
-
-def _velocity_from_priority(priority_time: int) -> float:
-    """Map time priority (1-5) to velocity (70-140 km/h)."""
-    step = (MAX_VELOCITY_KMH - BASE_VELOCITY_KMH) / 4.0   # 17.5 km/h per step
-    return BASE_VELOCITY_KMH + (priority_time - 1) * step
-
-
-def _consumption_multiplier(velocity_kmh: float) -> float:
-    """Drag-based consumption scaling: (v / v_base) ^ 1.6."""
-    return (velocity_kmh / BASE_VELOCITY_KMH) ** VELOCITY_EXPONENT
-
-
 # ── User preferences ──
 
 @dataclass
@@ -65,7 +60,15 @@ class UserPreferences:
 
     Priorities are integers 1-5, converted to 0-1 floats by dividing by 5.
     destinations is an ordered list — visited in the given sequence.
-    Example: source="Izmir", destinations=["Balikesir", "Eskisehir", "Ankara", "Istanbul"]
+
+    DESIGN RULE — priorities only PRIORITIZE, they never CONTROL:
+        priority_time    -> Z-score weight only
+        priority_cost    -> Z-score weight only
+        priority_anxiety -> Z-score weight only
+
+    Velocity is NOT a user preference:
+        Energy  -> always at eco speed (70 km/h) for max feasibility
+        Time    -> at cruise speed (90 km/h) or TomTom real-world data
     """
     source: str
     destinations: list[str]            # ordered waypoints, last = final dest
@@ -103,13 +106,18 @@ class UserPreferences:
 
     @property
     def velocity_kmh(self) -> float:
-        """Driving velocity based on time priority (70-140 km/h)."""
-        return _velocity_from_priority(self.priority_time)
+        """Cruise velocity for time estimation (NOT energy)."""
+        return CRUISE_VELOCITY_KMH
+
+    @property
+    def eco_velocity_kmh(self) -> float:
+        """Eco velocity for energy computation — maximizes range."""
+        return BASE_VELOCITY_KMH
 
     @property
     def consumption_multiplier(self) -> float:
-        """Energy consumption scaling from velocity: (v/v_base)^1.6."""
-        return _consumption_multiplier(self.velocity_kmh)
+        """Energy consumption scaling — always 1.0 (eco speed)."""
+        return 1.0  # energy always at eco speed
 
     # ── Validation ──
 

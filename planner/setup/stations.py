@@ -68,14 +68,31 @@ def filter_corridor(
     if len(out) <= MAX_STATIONS_IN_MODEL:
         return out
 
-    # Sample evenly if too many stations
-    nout = len(out)
+    # ── Smart sampling: segment-based, prefer stations closest to route ──
+    # Divide the t range [0, 1] into M equal segments.
+    # In each segment, pick the station with the lowest cross-track distance.
+    # This ensures even geographic coverage AND proximity to the actual road.
     m = MAX_STATIONS_IN_MODEL
-    indices = sorted({
-        min(nout - 1, int(round(i * (nout - 1) / max(m - 1, 1))))
-        for i in range(m)
-    })
-    return out.iloc[indices].reset_index(drop=True)
+    nout = len(out)
+    t_vals = out["t"].values
+    cross_vals = out["cross_km"].values
+
+    selected_indices: set[int] = set()
+    segment_edges = np.linspace(t_vals[0], t_vals[-1], m + 1)
+
+    for seg_i in range(m):
+        t_lo, t_hi = segment_edges[seg_i], segment_edges[seg_i + 1]
+        # Allow slight overlap at boundaries
+        in_seg = np.where((t_vals >= t_lo - 1e-6) & (t_vals <= t_hi + 1e-6))[0]
+        if len(in_seg) == 0:
+            continue
+        # Pick the station with the smallest cross-track distance
+        best_in_seg = in_seg[np.argmin(cross_vals[in_seg])]
+        selected_indices.add(best_in_seg)
+
+    # Sort by t to maintain order
+    selected = sorted(selected_indices)
+    return out.iloc[selected].reset_index(drop=True)
 
 
 def build_node_list(

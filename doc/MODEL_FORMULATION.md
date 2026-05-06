@@ -2,9 +2,7 @@
 
 ## Problem
 
-Given a source, a destination, a set of charging stations along the corridor,
-and user preferences, find the route and charging plan that minimises a weighted
-objective combining travel time, charging cost, and range-anxiety penalty.
+Given a multi-leg journey consisting of an origin, potentially multiple intermediate waypoints, a destination, a set of charging stations along the route, and user preferences, the objective is to find the sequence of charging stops and amounts that minimises a weighted objective combining travel time (including charging and wait times), charging cost, and range-anxiety penalty.
 
 ---
 
@@ -42,9 +40,13 @@ objective combining travel time, charging cost, and range-anxiety penalty.
 | Symbol | Domain | Description |
 |--------|--------|-------------|
 | x_ij | {0, 1} | 1 if edge (i → j) is used in the route, 0 otherwise |
+| v_i | {0, 1} | 1 if node i is chosen as a charging stop, 0 otherwise |
 | q_i | ℝ ≥ 0 | Amount of energy (%) charged at node i |
 | y_i | [0, B_max] | Battery state-of-charge (%) on **arrival** at node i |
 | p_i | ℝ ≥ 0 | Anxiety penalty at node i |
+| T_{arr, i} | ℝ ≥ 0 | Absolute time of arrival at node i (min) |
+| T_{dep, i} | ℝ ≥ 0 | Absolute time of departure from node i (min) |
+| w_i | ℝ ≥ 0 | Wait time at node i due to station occupancy (min) |
 
 ---
 
@@ -53,7 +55,7 @@ objective combining travel time, charging cost, and range-anxiety penalty.
 Minimise:
 
 ```
-Z = w₁ · ( Σ_{(i,j)∈E} x_ij · t_ij  +  Σ_{i∈N} q_i · r_i )
+Z = w₁ · ( Σ_{(i,j)∈E} x_ij · t_ij  +  Σ_{i∈N} (q_i · r_i + w_i) )
   + w₂ · ( Σ_{i∈N} q_i · c_q )
   + w₃ · ( Σ_{i∈N} p_i )
 ```
@@ -137,7 +139,23 @@ If SOC is below τ, p_i captures the deficit (τ − y_i).
 q_0 = 0,   q_{n-1} = 0
 ```
 
-### 9.  External Factor
+### 9.  Charging Station Selection & Capacity
+
+```
+∀ i ∈ N:   q_i ≤ B_{max} · v_i
+```
+
+Charging only occurs if a station is visited ($v_i = 1$). Wait times $w_i$ are incurred upon visitation, modelled as a function of the arrival time $T_{arr, i}$ and the historical/mocked occupancy rate of the station.
+
+### 10. Time Tracking
+
+```
+T_{dep, 0} = 0
+∀ i ∈ N:   T_{dep, i} = T_{arr, i} + w_i + (q_i · r_i)
+∀ (i,j) ∈ E: T_{arr, j} ≥ T_{dep, i} + t_{ij} - M(1 - x_{ij})
+```
+
+### 11. External Factor
 
 The external factor F_ext is **not** a constraint — it is a parameter that
 **scales all edge energy values** before the optimisation:
@@ -166,13 +184,11 @@ needed for every leg, modelling conditions such as:
 | **Sets** | 2 | N (nodes), E (edges) |
 | **Parameters** | 12 | B_max, B_start, B_end, B_floor, B_ceil, τ, e_ij, t_ij, c_q, P_i, η, F_ext |
 | **User Prefs** | 3 | w₁ (time), w₂ (cost), w₃ (anxiety) |
-| **Variables** | 4 | x_ij (binary), q_i (continuous), y_i (continuous), p_i (continuous) |
-| **Constraints** | 9 | Flow (3), battery tracking, initial/terminal battery, ceiling, floor, anxiety, no charge at endpoints, external factor scaling |
+| **Variables** | 8 | x_ij, v_i (binary), q_i, y_i, p_i, T_{arr, i}, T_{dep, i}, w_i (continuous) |
+| **Constraints** | 11 | Flow (3), battery tracking, initial/terminal battery, ceiling, floor, anxiety, endpoints, selection, time tracking |
 
 ---
 
 ## Solver
 
-The current implementation uses **forward dynamic programming** (NumPy) rather than a MILP solver. The state space is `(node, battery_level)` with battery discretised to 1 % steps and charge amounts in 5 % steps. The DP enforces all the constraints above implicitly by only expanding feasible states.
-
-The legacy MILP formulation in `milp/MILP_solverfw_test.py` and `milp/izmir_ankara_tomtom_epdk_test.py` uses PuLP/CBC with the same mathematical model.
+This mathematical model defines a Mixed Integer Linear Programming (MILP) problem. Due to the computational complexity of the full MILP for large multi-leg routes, the current implementation uses an **Evolutionary Algorithm (EA)** solver (`ea_solver.py`). The EA evaluates valid paths and charging sequences, implicitly enforcing the flow, battery equality, and capacity constraints to find near-optimal solutions efficiently.
