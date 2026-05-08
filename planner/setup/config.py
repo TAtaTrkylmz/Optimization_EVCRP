@@ -28,7 +28,7 @@ DATA_CSV = REPO_ROOT / "data" / "geocoded_epdk_data.csv"
 # ── Battery & cost ──
 B_MAX = 100.0
 ANXIETY_THRESHOLD = 20.0          # penalty kicks in below this SOC (%)
-CHARGE_COST_PER_PCT = 10.0        # flat TL per % charged
+ENERGY_COST_PER_PCT = 10.0        # flat TL per % of battery energy spent driving
 DC_EFFICIENCY = 0.88
 
 # ── Velocity ──
@@ -37,8 +37,8 @@ CRUISE_VELOCITY_KMH = 90.0       # cruise speed — used for TIME computation
 VELOCITY_EXPONENT = 1.6           # drag exponent for consumption scaling
 
 # ── Corridor ──
-MAX_CROSS_TRACK_KM = 120.0
-MAX_STATIONS_IN_MODEL = 80
+MAX_CROSS_TRACK_KM = 150.0
+MAX_STATIONS_IN_MODEL = 200
 
 # ── Evolutionary algorithm ──
 CHARGE_STEP_PCT = 5               # charge granularity (%)

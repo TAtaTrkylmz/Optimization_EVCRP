@@ -11,7 +11,7 @@ import random
 import numpy as np
 
 from planner.setup.config import (
-    ANXIETY_THRESHOLD, B_MAX, CHARGE_COST_PER_PCT, CHARGE_STEP_PCT,
+    ANXIETY_THRESHOLD, B_MAX, ENERGY_COST_PER_PCT, CHARGE_STEP_PCT,
     DC_EFFICIENCY, EA_CROSSOVER_RATE, EA_GENERATIONS, EA_MUTATION_RATE,
     EA_POP_SIZE, EA_TOURNAMENT_K, UserPreferences,
 )
@@ -66,7 +66,7 @@ def evaluate_plan(
     total_drive = 0.0
     total_ct = 0.0
     total_wt = 0.0
-    total_cc = 0.0
+    total_energy_spent = 0.0           # total energy consumed
     total_anx = 0.0
     current_time_min = 0.0
 
@@ -86,10 +86,10 @@ def evaluate_plan(
             total_wt += wt
             total_ct += ct
             current_time_min += wt + ct
-            total_cc += q * CHARGE_COST_PER_PCT
 
         e = energy_mat[i, j]
         battery -= e
+        total_energy_spent += e          # accumulate energy spent on this segment
         if battery < b_floor - 0.01:
             return INF, None
 
@@ -102,6 +102,8 @@ def evaluate_plan(
     if battery < prefs.battery_end_min_pct - 0.01:
         return INF, None
 
+    total_cc = total_energy_spent * ENERGY_COST_PER_PCT
+
     z = (prefs.w_time * (total_drive + total_ct + total_wt)
          + prefs.w_cost * total_cc
          + prefs.w_anxiety * total_anx)
@@ -113,6 +115,7 @@ def evaluate_plan(
         "total_ct": total_ct,
         "total_wt": total_wt,
         "total_cc": total_cc,
+        "total_energy_spent": total_energy_spent,
         "battery_dest": battery,
         "z": z,
     }
@@ -136,7 +139,8 @@ def build_result(
     """Convert a path + charge map into a full RouteResult."""
     n = len(coords)
     stops: list[ChargingStop] = []
-    total_drive = total_ct = total_wt = total_cc = 0.0
+    total_drive = total_ct = total_wt = 0.0
+    total_energy_spent = 0.0           # total energy consumed driving (for cost)
     battery = prefs.battery_start_pct
     cap = prefs.battery_capacity_kwh
     current_time_min = 0.0
@@ -150,7 +154,7 @@ def build_result(
             
             wt = get_mock_station_occupancy(sid, current_time_min)["wait_time_min"]
             ct = charge_time_min(q, kw, cap)
-            cc = q * CHARGE_COST_PER_PCT
+            cc = q * ENERGY_COST_PER_PCT
             
             stops.append(ChargingStop(
                 node_index=i, station_id=sid,
@@ -166,17 +170,21 @@ def build_result(
             ))
             total_wt += wt
             total_ct += ct
-            total_cc += cc
             current_time_min += wt + ct
             battery += q
             
+        e = energy_mat[i, j]
+        battery -= e
+        total_energy_spent += e          # accumulate energy spent
         drive_t = time_mat[i, j]
-        battery -= energy_mat[i, j]
         total_drive += drive_t
         current_time_min += drive_t
 
     # TODO: add POI-based suggestions once POI CSV is available.
     # See _generate_suggestions (commented out) for the logic skeleton.
+
+    # Cost = total energy consumed driving × rate per %
+    total_cc = total_energy_spent * ENERGY_COST_PER_PCT
 
     z = (prefs.w_time * (total_drive + total_ct + total_wt)
          + prefs.w_cost * total_cc

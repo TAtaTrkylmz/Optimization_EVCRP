@@ -5,11 +5,11 @@ CLI entry point for the Personalizable EV Route Planner.
 Example runs:
 
   Single destination:
-    python -m planner.main --source "Izmir, Turkey" --destinations "Ankara, Turkey" \
+    python -m planner.main --car 3403 --source "Izmir, Turkey" --destinations "Ankara, Turkey" \
         --battery-start 85 --battery-end 20 --w-time 3 --w-cost 3 --w-anxiety 3
 
   Multi-destination (ordered):
-    python -m planner.main --source "Izmir, Turkey" \
+    python -m planner.main --car 3403 --source "Izmir, Turkey" \
         --destinations "Balikesir, Turkey" "Eskisehir, Turkey" "Ankara, Turkey" "Istanbul, Turkey" \
         --battery-start 85 --battery-end 20 --w-time 5 --w-cost 3 --w-anxiety 2
 
@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from planner.setup.config import UserPreferences
+from planner.setup.ev_vehicle import find_vehicle_by_id, print_vehicle_banner
 from planner.pipeline import plan_journey
 from planner.setup.visualization import show_all_plots
 from api.mocker import set_occupancy_seed
@@ -47,9 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Priorities are integers 1-5 (1 = least, 5 = most).\n"
             "They ONLY affect the Z-score ranking (which route is 'best').\n"
             "They do NOT change driving speed, energy consumption, or feasibility.\n"
-            "Velocity is a fixed vehicle constant (90 km/h)."
+            "Velocity is a fixed vehicle constant (90 km/h).\n\n"
+            "Vehicle data (battery capacity, efficiency) is loaded from the\n"
+            "ev-database.org JSON file based on the --car flag."
         ),
     )
+    p.add_argument("--car", type=int, required=True,
+                   help="EV Database car ID (the number from ev-database.org/car/{ID}/...)")
     p.add_argument("--source", required=True,
                    help='Starting point, e.g. "Izmir, Turkey"')
     p.add_argument("--destinations", required=True, nargs="+",
@@ -58,10 +63,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Current battery %%")
     p.add_argument("--battery-end", type=float, required=True,
                    help="Desired ending battery %% at final destination")
-    p.add_argument("--battery-kwh", type=float, default=60.0,
-                   help="Battery capacity kWh (default: 60)")
-    p.add_argument("--consumption", type=float, default=18.0,
-                   help="Base kWh/100km at 70 km/h (default: 18)")
     p.add_argument("--w-time", type=int, default=3, choices=range(1, 6),
                    metavar="1-5",
                    help="Time priority 1-5 (default: 3)")
@@ -101,7 +102,7 @@ def _format_leg(leg, leg_idx, total_legs) -> str:
         f"  Drive time    : {r.total_drive_time_min:.1f} min",
         f"  Charge time   : {r.total_charge_time_min:.1f} min",
         f"  Total time    : {r.total_time_min:.1f} min",
-        f"  Total cost    : {r.total_cost:.1f} TL",
+        f"  Total cost    : {r.total_cost:.1f} TL  (energy spent)",
         f"  Battery at end: {r.battery_at_destination_pct:.1f}%",
         f"  Valid Routes  : {leg.feasible_routes_found} attempted paths evaluated",
         "",
@@ -137,13 +138,17 @@ def _build_save_name(prefs) -> str:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
 
+    # Load real vehicle data from the EV database
+    vehicle = find_vehicle_by_id(args.car)
+    print_vehicle_banner(vehicle)
+
     prefs = UserPreferences(
         source=args.source,
         destinations=args.destinations,
         battery_start_pct=args.battery_start,
         battery_end_min_pct=args.battery_end,
-        battery_capacity_kwh=args.battery_kwh,
-        consumption_kwh_per_100km=args.consumption,
+        battery_capacity_kwh=vehicle.battery_kwh,
+        consumption_kwh_per_100km=vehicle.consumption_kwh_per_100km,
         priority_time=args.w_time,
         priority_cost=args.w_cost,
         priority_anxiety=args.w_anxiety,
