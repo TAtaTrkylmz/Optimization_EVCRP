@@ -227,7 +227,8 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
     # 6. Title with journey details
     ax.set_title(
         f"Full Journey: {multi.itinerary}\n"
-        f"Total: {multi.total_time_min:.0f} min  |  "
+        f"Total Distance: {multi.total_distance_km:.0f} km  |  "
+        f"Total Time: {multi.total_time_min:.0f} min  |  "
         f"Drive: {multi.total_drive_time_min:.0f} min  |  "
         f"Charge: {multi.total_charge_time_min:.0f} min  |  "
         f"Cost: {multi.total_cost:.0f} TL  |  "
@@ -262,7 +263,7 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
         n_stops = len(r.stops)
         info_lines.append(
             f"Leg {leg.leg_index+1}: {leg.origin.split(',')[0]}→{leg.destination.split(',')[0]}  "
-            f"| {r.total_time_min:.0f} min | {r.total_cost:.0f} TL | "
+            f"| {r.total_distance_km:.0f} km | {r.total_time_min:.0f} min | {r.total_cost:.0f} TL | "
             f"{n_stops} stop{'s' if n_stops != 1 else ''} | "
             f"SOC {r.battery_at_destination_pct:.0f}%"
         )

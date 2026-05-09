@@ -19,6 +19,7 @@ import numpy as np
 from planner.setup.config import BASE_VELOCITY_KMH, CRUISE_VELOCITY_KMH
 from planner.setup.routing_cache import load_routes_bulk, _round_coord
 from planner.setup.tomtom import route_summary
+from planner.setup.logger import log
 from api.mocker import WeatherSquare, get_segment_weather_penalty
 
 
@@ -97,7 +98,7 @@ def build_cost_matrices(
                             api_hits += 1
                     except RuntimeError as e:
                         if "403" in str(e) or "429" in str(e):
-                            print(f"\n  [!] {e} Disabling live API for remainder of this leg.")
+                            log.warn(f"{e} Disabling live API for remainder of this leg.")
                             api_rate_limit_hit = True
                     except Exception:
                         pass
@@ -150,7 +151,7 @@ def build_cost_matrices(
     if coords is not None:
         total_edges = n * (n - 1)
         fallback_count = total_edges - cache_hits - api_hits
-        print(f"       -> Road data: {cache_hits}/{total_edges} from DB cache, "
-              f"{api_hits} live API, {fallback_count} haversine fallback")
+        log.step(f"Road data: {cache_hits}/{total_edges} from DB cache, "
+                 f"{api_hits} live API, {fallback_count} haversine fallback")
 
     return energy_mat, time_mat, road_km_mat

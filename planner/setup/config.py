@@ -27,8 +27,8 @@ DATA_CSV = REPO_ROOT / "data" / "geocoded_epdk_data.csv"
 
 # ── Battery & cost ──
 B_MAX = 100.0
-ANXIETY_THRESHOLD = 20.0          # penalty kicks in below this SOC (%)
-ENERGY_COST_PER_PCT = 10.0        # flat TL per % of battery energy spent driving
+ANXIETY_RANGE_KM = 50.0           # anxiety penalty kicks in when remaining range < this (km)
+ENERGY_COST_PER_KWH = 6.5         # TL per kWh of energy consumed (DC charging rate)
 DC_EFFICIENCY = 0.88
 
 # ── Velocity ──
@@ -50,6 +50,29 @@ EA_TOURNAMENT_K = 3
 
 # ── TomTom ──
 TOMTOM_GEOCODE_BASE = "https://api.tomtom.com/search/2/geocode"
+
+
+# ── Anxiety threshold ──
+
+def compute_anxiety_threshold(range_km: float, battery_ceil: float) -> float:
+    """Derive the anxiety SOC threshold from vehicle range and battery ceiling.
+
+    Logic:
+        base = (ANXIETY_RANGE_KM / range_km) * 100  — worry when <50 km range left
+        Clamp to at least 15% of ceiling  (low-range EVs still get a reasonable buffer)
+        Clamp to at most ceil - 2*w_range (ensure threshold is well below ceil)
+
+    Args:
+        range_km:     Vehicle's WLTP rated range (km).
+        battery_ceil: Maximum SOC the user allows during travel (%).
+
+    Returns:
+        Anxiety threshold as SOC percentage.
+    """
+    w_range_pct = (ANXIETY_RANGE_KM / max(range_km, 1.0)) * 100.0
+    threshold = max(w_range_pct, battery_ceil * 0.15)
+    threshold = min(threshold, battery_ceil - 2 * w_range_pct)
+    return round(max(threshold, 1.0), 1)   # never below 1%
 
 
 # ── User preferences ──
@@ -76,6 +99,7 @@ class UserPreferences:
     battery_end_min_pct: float
     battery_capacity_kwh: float = 60.0
     consumption_kwh_per_100km: float = 22.0
+    range_km: float = 300.0            # vehicle WLTP range (km) — for anxiety threshold
     priority_time: int = 3
     priority_cost: int = 3
     priority_anxiety: int = 3
@@ -118,6 +142,14 @@ class UserPreferences:
     def consumption_multiplier(self) -> float:
         """Energy consumption scaling — always 1.0 (eco speed)."""
         return 1.0  # energy always at eco speed
+
+    @property
+    def anxiety_threshold(self) -> float:
+        """SOC (%) below which range-anxiety penalty kicks in.
+
+        Derived from the vehicle's WLTP range and the battery ceiling.
+        """
+        return compute_anxiety_threshold(self.range_km, self.battery_max_enroute_pct)
 
     # ── Validation ──
 

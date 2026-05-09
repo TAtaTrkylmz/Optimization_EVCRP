@@ -83,16 +83,15 @@ def find_vehicle_by_id(car_id: int) -> EVVehicle:
         return _entry_to_vehicle(entry, car_id)
 
     # Not found — show closest matches
-    print(f"\n[!] Car ID {car_id} not found in the EV database.")
-    print(f"    Database contains {len(index)} vehicles.\n")
+    log.warn(f"Car ID {car_id} not found in the EV database.")
+    log.step(f"Database contains {len(index)} vehicles.")
 
     # Try to find partial name matches or close IDs
     close_ids = sorted(index.keys(), key=lambda x: abs(x - car_id))[:10]
-    print("    Closest car IDs:")
+    log.info("Closest car IDs:")
     for cid in close_ids:
         name = index[cid].get("name", "Unknown")
-        print(f"      --car {cid}  ->  {name}")
-    print()
+        log.step(f"--car {cid}  ->  {name}")
 
     raise SystemExit(1)
 
@@ -130,17 +129,19 @@ def _clean_name(raw_name: str) -> str:
     return name.strip()
 
 
-def print_vehicle_banner(vehicle: EVVehicle) -> None:
+from planner.setup.logger import log
+
+
+def log_vehicle_banner(vehicle: EVVehicle) -> None:
     """Print a formatted vehicle banner at the start of logs."""
     fc = f"{vehicle.fastcharge_kw:.0f} kW DC" if vehicle.fastcharge_kw else "N/A"
-    print(f"\n{'='*60}")
-    print(f"  VEHICLE: {vehicle.name}")
-    print(f"{'='*60}")
-    print(f"  Battery      : {vehicle.battery_kwh:.1f} kWh")
-    print(f"  Efficiency   : {vehicle.efficiency_wh_per_km:.0f} Wh/km"
-          f"  ({vehicle.consumption_kwh_per_100km:.1f} kWh/100km)")
-    print(f"  Range        : {vehicle.range_km:.0f} km")
-    print(f"  Fast Charge  : {fc}")
-    print(f"  Weight       : {vehicle.weight_kg:.0f} kg")
-    print(f"  ev-database  : car/{vehicle.car_id}")
-    print(f"{'='*60}")
+    lines = [
+        f"VEHICLE: {vehicle.name}",
+        f"Battery      : {vehicle.battery_kwh:.1f} kWh",
+        f"Efficiency   : {vehicle.efficiency_wh_per_km:.0f} Wh/km  ({vehicle.consumption_kwh_per_100km:.1f} kWh/100km)",
+        f"Range        : {vehicle.range_km:.0f} km",
+        f"Fast Charge  : {fc}",
+        f"Weight       : {vehicle.weight_kg:.0f} kg",
+        f"ev-database  : car/{vehicle.car_id}"
+    ]
+    log.banner(lines)

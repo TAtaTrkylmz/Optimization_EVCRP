@@ -18,15 +18,18 @@ Usage:
 """
 from __future__ import annotations
 
-import time
 import numpy as np
 
-from planner.setup.config import UserPreferences, BASE_VELOCITY_KMH, CRUISE_VELOCITY_KMH
+from planner.setup.config import (
+    UserPreferences, BASE_VELOCITY_KMH, CRUISE_VELOCITY_KMH,
+    ANXIETY_RANGE_KM,
+)
 from planner.setup.models import LegResult, MultiLegResult
 from planner.setup.tomtom import load_api_key, geocode, route_summary, route_with_geometry
 from planner.setup.stations import load_stations, filter_corridor, build_node_list
 from planner.setup.matrices import haversine_matrix, build_cost_matrices
 from planner.setup import ea_solver
+from planner.setup.logger import log
 from api.mocker import get_mock_weather, WeatherSquare
 
 
@@ -37,21 +40,21 @@ from api.mocker import get_mock_weather, WeatherSquare
 def _geocode_location(name: str, api_key: str) -> tuple[float, float]:
     """Geocode a single location and print the result."""
     lat, lon = geocode(name, api_key)
-    print(f"       -> ({lat:.5f}, {lon:.5f})")
+    log.step(f"{name} -> ({lat:.5f}, {lon:.5f})")
     return lat, lon
 
 
 def _get_route_info(lat_o, lon_o, lat_d, lon_d, api_key):
     """Fetch TomTom route summary between two coordinates."""
     road_km, drive_min = route_summary(lat_o, lon_o, lat_d, lon_d, api_key)
-    print(f"       -> {road_km:.1f} km, {drive_min:.1f} min")
+    log.step(f"{road_km:.1f} km, {drive_min:.1f} min")
     return road_km, drive_min
 
 
 def _filter_stations(stations, lat_o, lon_o, lat_d, lon_d):
     """Filter corridor stations for a single leg."""
     corridor_df = filter_corridor(stations, lat_o, lon_o, lat_d, lon_d)
-    print(f"       -> {len(corridor_df)} stations in corridor")
+    log.step(f"{len(corridor_df)} stations in corridor")
     if corridor_df.empty:
         raise RuntimeError("No charging stations found along the corridor!")
     return corridor_df
@@ -74,19 +77,20 @@ def _build_matrices(lat_o, lon_o, lat_d, lon_d, corridor_df, prefs):
 
 def _print_zscore_table(all_evaluated):
     """Print top 30 solutions from the EA Z-score table."""
-    print(f"\n{'-'*64}")
-    print(f"  Z-SCORE TABLE  ({len(all_evaluated)} feasible solutions)")
-    print(f"{'-'*64}")
-    print(f"  {'#':<5} {'Z-score':<12} {'Stops':<7} "
-          f"{'Time(min)':<11} {'Cost(TL)':<10} {'Dest SOC'}")
-    print(f"  {'-'*5} {'-'*11} {'-'*6} {'-'*10} {'-'*9} {'-'*8}")
+    log.info(f"")
+    log.info(f"{'-'*72}")
+    log.info(f"  Z-SCORE TABLE  ({len(all_evaluated)} feasible solutions)")
+    log.info(f"{'-'*72}")
+    log.info(f"  {'#':<5} {'Z-score':<12} {'Stops':<7} "
+             f"{'Time(min)':<11} {'Cost(TL)':<10} {'Dist(km)':<10} {'Dest SOC'}")
+    log.info(f"  {'-'*5} {'-'*11} {'-'*6} {'-'*10} {'-'*9} {'-'*9} {'-'*8}")
     for idx, e in enumerate(all_evaluated[:30], 1):
-        print(f"  {idx:<5} {e['z']:<12.2f} {e['n_stops']:<7} "
-              f"{e['total_time']:<11.1f} {e['cost']:<10.1f} "
-              f"{e['dest_soc']:.1f}%")
+        log.info(f"  {idx:<5} {e['z']:<12.2f} {e['n_stops']:<7} "
+                 f"{e['total_time']:<11.1f} {e['cost']:<10.1f} "
+                 f"{e.get('distance', 0):<10.1f} {e['dest_soc']:.1f}%")
     if len(all_evaluated) > 30:
-        print(f"  ... ({len(all_evaluated) - 30} more omitted)")
-    print(f"{'-'*64}\n")
+        log.info(f"  ... ({len(all_evaluated) - 30} more omitted)")
+    log.info(f"{'-'*72}")
 
 # ---------------------------------------------------------------------------
 # Partial route builder (for infeasible cases)
@@ -164,70 +168,69 @@ def plan_single_leg(
     Returns:
         LegResult with route, convergence, and visualization data.
     """
-    prefix = f"  [Leg {leg_index + 1}]"
-    t0 = time.perf_counter()
+    prefix = f"[Leg {leg_index + 1}]"
 
     # 1. TomTom route summary
-    print(f"{prefix} Fetching route: {origin_name} -> {dest_name}")
-    road_km, drive_min = route_summary(lat_o, lon_o, lat_d, lon_d, api_key, use_cache=True, live_traffic=live_traffic)
-    print(f"       -> {road_km:.1f} km, {drive_min:.1f} min  [{time.perf_counter()-t0:.2f}s]")
+    with log.timed(f"{prefix} Fetching route: {origin_name} -> {dest_name}"):
+        road_km, drive_min = route_summary(lat_o, lon_o, lat_d, lon_d, api_key, use_cache=True, live_traffic=live_traffic)
+        log.step(f"{road_km:.1f} km, {drive_min:.1f} min")
 
     # 2. Filter corridor stations
-    t1 = time.perf_counter()
-    print(f"{prefix} Filtering corridor stations...")
-    corridor_df = _filter_stations(stations, lat_o, lon_o, lat_d, lon_d)
-    print(f"       [{time.perf_counter()-t1:.2f}s]")
+    with log.timed(f"{prefix} Filtering corridor stations"):
+        corridor_df = _filter_stations(stations, lat_o, lon_o, lat_d, lon_d)
 
     # 3. Build matrices
-    t2 = time.perf_counter()
-    print(f"{prefix} Building matrices...")
-    coords, station_kw, station_meta, n, dist_mat, crow_total = \
-        _build_matrices(lat_o, lon_o, lat_d, lon_d, corridor_df, prefs)
+    with log.timed(f"{prefix} Building cost matrices (with road cache)"):
+        coords, station_kw, station_meta, n, dist_mat, crow_total = \
+            _build_matrices(lat_o, lon_o, lat_d, lon_d, corridor_df, prefs)
 
-    rf = road_km / max(crow_total, 1e-3)
+        rf = road_km / max(crow_total, 1e-3)
 
-    # 3b. Build Cost Matrices using Dynamic Eco-Routing Fallback
-    print(f"{prefix} Building cost matrices (with road cache)...")
-    e_mat, t_mat, road_km_mat = build_cost_matrices(
-        dist_mat, rf,
-        prefs.consumption_kwh_per_100km,
-        prefs.battery_capacity_kwh,
-        target_velocity_kmh=prefs.velocity_kmh,
-        coords=coords,
-        api_key=api_key,
-        live_traffic=live_traffic,
-        weather_squares=weather_squares,
-    )
-    weather_info = ""
-    if weather_squares:
-        weather_info = f", {len(weather_squares)} weather zones active"
-    print(f"       -> {n} nodes, energy@{BASE_VELOCITY_KMH:.0f}km/h  time@{CRUISE_VELOCITY_KMH:.0f}km/h{weather_info}  [{time.perf_counter()-t2:.2f}s]")
+        # 3b. Build Cost Matrices using Dynamic Eco-Routing Fallback
+        e_mat, t_mat, road_km_mat = build_cost_matrices(
+            dist_mat, rf,
+            prefs.consumption_kwh_per_100km,
+            prefs.battery_capacity_kwh,
+            target_velocity_kmh=prefs.velocity_kmh,
+            coords=coords,
+            api_key=api_key,
+            live_traffic=live_traffic,
+            weather_squares=weather_squares,
+        )
+        weather_info = ""
+        if weather_squares:
+            weather_info = f", {len(weather_squares)} weather zones active"
+        log.step(f"{n} nodes, energy@{BASE_VELOCITY_KMH:.0f}km/h  "
+                 f"time@{CRUISE_VELOCITY_KMH:.0f}km/h{weather_info}")
 
     # 4. Create a temporary prefs copy with this leg's battery_start
     is_final_leg = (leg_index == len(prefs.destinations) - 1)
     leg_prefs = _make_leg_prefs(prefs, battery_start_pct, is_final_leg)
 
-    # 5. Run EA solver
-    t3 = time.perf_counter()
-    print(f"{prefix} Running EA optimisation...")
-    kw_arr = np.array([0.0] + station_kw + [0.0])
-    best_route, all_evaluated, convergence = ea_solver.solve(
-        n, e_mat, t_mat, kw_arr, station_meta, coords, leg_prefs,
-    )
+    # Log the computed anxiety threshold
+    log.metric("Anxiety threshold", f"{leg_prefs.anxiety_threshold:.1f}% "
+               f"(range={prefs.range_km:.0f}km, ceil={prefs.battery_max_enroute_pct:.0f}%, "
+               f"w-range={ANXIETY_RANGE_KM:.0f}km)")
 
-    print(f"       -> EA done  [{time.perf_counter()-t3:.2f}s]")
+    # 5. Run EA solver
+    with log.timed(f"{prefix} Running EA optimisation"):
+        kw_arr = np.array([0.0] + station_kw + [0.0])
+        best_route, all_evaluated, convergence = ea_solver.solve(
+            n, e_mat, t_mat, kw_arr, station_meta, coords, leg_prefs,
+            road_km_mat,
+        )
 
     if not all_evaluated:
         # Build a partial route showing how far we can get
-        print(f"{prefix} [!] No feasible route found! Building partial route...")
+        log.warn(f"{prefix} No feasible route found! Building partial route...")
         partial_path, partial_battery = _build_partial_route(
             n, e_mat, leg_prefs
         )
         last_node = partial_path[-1] if partial_path else 0
         last_coord = coords[last_node]
-        print(f"       -> Vehicle stranded at node {last_node} "
-              f"({last_coord[0]:.4f}, {last_coord[1]:.4f}) "
-              f"with {partial_battery:.1f}% battery")
+        log.warn(f"Vehicle stranded at node {last_node} "
+                 f"({last_coord[0]:.4f}, {last_coord[1]:.4f}) "
+                 f"with {partial_battery:.1f}% battery")
         
         # Build a minimal RouteResult for the partial path
         from planner.setup.models import RouteResult
@@ -240,6 +243,7 @@ def plan_single_leg(
             total_wait_time_min=0.0,
             total_time_min=0.0,
             total_cost=0.0,
+            total_distance_km=0.0,
             z_score=float('inf'),
             battery_at_destination_pct=partial_battery,
             is_partial=True,
@@ -269,19 +273,20 @@ def plan_single_leg(
             route_geometries=route_geometries,
         )
 
+    # Z-score table
+    _print_zscore_table(all_evaluated)
+
     # 6. Fetch road geometry for the traveled edges (only 2-5 API calls)
-    t4 = time.perf_counter()
-    print(f"{prefix} Fetching road geometry for traveled path...")
-    path = best_route.path_node_indices
-    route_geometries: dict[tuple[int,int], list[tuple[float,float]]] = {}
-    for step in range(len(path) - 1):
-        ni, nj = path[step], path[step + 1]
-        lat1, lon1 = coords[ni]
-        lat2, lon2 = coords[nj]
-        geo = route_with_geometry(lat1, lon1, lat2, lon2, api_key)
-        route_geometries[(ni, nj)] = geo
-    print(f"       -> {len(route_geometries)} road segments fetched  [{time.perf_counter()-t4:.2f}s]")
-    print(f"       -> Leg total: {time.perf_counter()-t0:.2f}s")
+    with log.timed(f"{prefix} Fetching road geometry for traveled path"):
+        path = best_route.path_node_indices
+        route_geometries: dict[tuple[int,int], list[tuple[float,float]]] = {}
+        for step in range(len(path) - 1):
+            ni, nj = path[step], path[step + 1]
+            lat1, lon1 = coords[ni]
+            lat2, lon2 = coords[nj]
+            geo = route_with_geometry(lat1, lon1, lat2, lon2, api_key)
+            route_geometries[(ni, nj)] = geo
+        log.step(f"{len(route_geometries)} road segments fetched")
         
     return LegResult(
         leg_index=leg_index,
@@ -313,6 +318,7 @@ def _make_leg_prefs(prefs: UserPreferences, battery_start: float, is_final_leg: 
         battery_end_min_pct=end_pct,
         battery_capacity_kwh=prefs.battery_capacity_kwh,
         consumption_kwh_per_100km=prefs.consumption_kwh_per_100km,
+        range_km=prefs.range_km,
         priority_time=prefs.priority_time,
         priority_cost=prefs.priority_cost,
         priority_anxiety=prefs.priority_anxiety,
@@ -337,55 +343,55 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False,
         4. (Future) ALNS improvement
         5. Return aggregated MultiLegResult
     """
+    log.mark_journey_start()
     api_key = load_api_key()
 
     # Build the full waypoint list: [source, dest1, dest2, ..., final_dest]
     waypoints = [prefs.source] + list(prefs.destinations)
     n_legs = len(waypoints) - 1
 
-    print(f"\n{'='*60}")
-    print(f"  EV ROUTE PLANNER — {n_legs} leg(s)")
-    print(f"{'='*60}")
-    print(f"  Itinerary: {' -> '.join(waypoints)}")
-    print(f"  Battery   : {prefs.battery_start_pct:.0f}% start"
-          f" -> {prefs.battery_end_min_pct:.0f}% min at final dest")
-    print(f"  Enroute   : floor={prefs.battery_min_enroute_pct:.0f}%"
-          f"  ceil={prefs.battery_max_enroute_pct:.0f}%")
-    print(f"  Vehicle   : {prefs.battery_capacity_kwh} kWh,"
-          f" {prefs.consumption_kwh_per_100km} kWh/100km")
-    print(f"  Velocity  : energy@{BASE_VELOCITY_KMH:.0f}km/h (eco)"
-          f"  time@{CRUISE_VELOCITY_KMH:.0f}km/h (cruise)")
-    print(f"  Priorities: time={prefs.priority_time}"
-          f"  cost={prefs.priority_cost}"
-          f"  anxiety={prefs.priority_anxiety}")
-    print(f"  Weights   : time={prefs.w_time:.1f}"
-          f"  cost={prefs.w_cost:.1f}"
-          f"  anxiety={prefs.w_anxiety:.1f}")
-    print(f"{'='*60}\n")
+    log.section(f"EV ROUTE PLANNER - {n_legs} leg(s)")
+    log.info(f"  Itinerary: {' -> '.join(waypoints)}")
+    log.info(f"  Battery   : {prefs.battery_start_pct:.0f}% start"
+             f" -> {prefs.battery_end_min_pct:.0f}% min at final dest")
+    log.info(f"  Enroute   : floor={prefs.battery_min_enroute_pct:.0f}%"
+             f"  ceil={prefs.battery_max_enroute_pct:.0f}%")
+    log.info(f"  Vehicle   : {prefs.battery_capacity_kwh} kWh,"
+             f" {prefs.consumption_kwh_per_100km} kWh/100km,"
+             f" range={prefs.range_km:.0f}km")
+    log.info(f"  Velocity  : energy@{BASE_VELOCITY_KMH:.0f}km/h (eco)"
+             f"  time@{CRUISE_VELOCITY_KMH:.0f}km/h (cruise)")
+    log.info(f"  Priorities: time={prefs.priority_time}"
+             f"  cost={prefs.priority_cost}"
+             f"  anxiety={prefs.priority_anxiety}")
+    log.info(f"  Weights   : time={prefs.w_time:.1f}"
+             f"  cost={prefs.w_cost:.1f}"
+             f"  anxiety={prefs.w_anxiety:.1f}")
+    log.info(f"  Anxiety   : threshold={prefs.anxiety_threshold:.1f}%"
+             f"  (w-range={ANXIETY_RANGE_KM:.0f}km)")
 
     # Step 1: Geocode all waypoints
-    t_start = time.perf_counter()
-    print("[1] Geocoding all waypoints...")
-    wp_coords: list[tuple[float, float]] = []
-    for i, wp in enumerate(waypoints):
-        print(f"  [{i+1}/{len(waypoints)}] {wp}")
-        wp_coords.append(_geocode_location(wp, api_key))
-    print(f"    [{time.perf_counter()-t_start:.2f}s]")
+    with log.timed("Geocoding all waypoints"):
+        wp_coords: list[tuple[float, float]] = []
+        for i, wp in enumerate(waypoints):
+            log.info(f"  [{i+1}/{len(waypoints)}] {wp}")
+            wp_coords.append(_geocode_location(wp, api_key))
 
     # Step 2: Load stations once
-    t_step2 = time.perf_counter()
-    print("\n[2] Loading charging station database...")
-    stations = load_stations()
-    print(f"       -> {len(stations)} stations loaded  [{time.perf_counter()-t_step2:.2f}s]")
+    with log.timed("Loading charging station database"):
+        stations = load_stations()
+        log.step(f"{len(stations)} stations loaded")
 
     # Step 2b: Generate mock weather over Turkey
     weather_squares = get_mock_weather(seed=weather_seed)
-    print(f"\n[2b] Weather simulation (seed={weather_seed}): {len(weather_squares)} zones generated")
+    log.info(f"")
+    log.info(f"Weather simulation (seed={weather_seed}): {len(weather_squares)} zones generated")
     for sq in weather_squares:
-        print(f"       {sq}")
+        log.step(str(sq))
 
     # Step 3: Plan each leg, chain battery SOC
-    print(f"\n[3] Planning {n_legs} leg(s)...\n")
+    log.info(f"")
+    log.info(f"Planning {n_legs} leg(s)...")
     legs: list[LegResult] = []
     battery = prefs.battery_start_pct
 
@@ -395,14 +401,15 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False,
         lat_o, lon_o = wp_coords[i]
         lat_d, lon_d = wp_coords[i + 1]
 
-        print(f"{'-'*50}")
-        print(f"  LEG {i+1}/{n_legs}: {src_name} -> {dst_name}")
-        print(f"  Starting battery: {battery:.1f}%")
-        print(f"{'-'*50}")
+        log.info(f"")
+        log.info(f"{'-'*50}")
+        log.info(f"  LEG {i+1}/{n_legs}: {src_name} -> {dst_name}")
+        log.info(f"  Starting battery: {battery:.1f}%")
+        log.info(f"{'-'*50}")
 
         # Simulate charging at the waypoint if battery is low
         if i > 0 and battery < 80.0:
-            print(f"  (Simulating charge at {src_name} to 80.0% before departure)")
+            log.info(f"  (Simulating charge at {src_name} to 80.0% before departure)")
             battery = 80.0
 
         leg = plan_single_leg(
@@ -422,12 +429,12 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False,
 
         # Chain battery: end of this leg = start of next
         battery = leg.route.battery_at_destination_pct
-        print(f"  Battery at {dst_name}: {battery:.1f}%\n")
+        log.info(f"  Battery at {dst_name}: {battery:.1f}%")
+        log.metric("Distance", f"{leg.route.total_distance_km:.1f} km")
 
         # Warn if battery is low going into next leg
         if i < n_legs - 1 and battery < prefs.battery_min_enroute_pct + 5:
-            print(f"  ⚠ WARNING: Low battery handoff ({battery:.1f}%)"
-                  f" entering next leg!")
+            log.warn(f"Low battery handoff ({battery:.1f}%) entering next leg!")
 
     # Step 4: ALNS improvement (future)
     legs = _alns_improve(legs, prefs)
@@ -458,12 +465,13 @@ def _alns_improve(legs: list[LegResult], prefs: UserPreferences) -> list[LegResu
         return legs
 
     # Analyse current handoffs for logging
-    print("[4] ALNS analysis (SOC handoffs):")
+    log.info("")
+    log.info("ALNS analysis (SOC handoffs):")
     for i in range(len(legs) - 1):
         soc = legs[i].route.battery_at_destination_pct
         next_leg = legs[i + 1]
-        print(f"     {legs[i].destination}: {soc:.1f}% "
-              f"-> Leg {i+2} starts with {soc:.1f}%")
+        log.step(f"{legs[i].destination}: {soc:.1f}% "
+                 f"-> Leg {i+2} starts with {soc:.1f}%")
 
     # TODO: implement destroy-repair iterations
     # for iteration in range(max_iterations):
@@ -472,7 +480,7 @@ def _alns_improve(legs: list[LegResult], prefs: UserPreferences) -> list[LegResu
     #     3. Re-plan leg[i] and leg[i+1] with adjusted SOC
     #     4. Accept if total_z improves
 
-    print("     (Improvement iterations not yet active)\n")
+    log.step("(Improvement iterations not yet active)")
     return legs
 
 
@@ -482,28 +490,29 @@ def _alns_improve(legs: list[LegResult], prefs: UserPreferences) -> list[LegResu
 
 def _print_journey_summary(result: MultiLegResult) -> None:
     """Print the aggregated journey summary."""
-    print(f"\n{'='*60}")
-    print(f"  JOURNEY SUMMARY")
-    print(f"{'='*60}")
-    print(f"  Itinerary      : {result.itinerary}")
-    print(f"  Total legs     : {len(result.legs)}")
-    print(f"  Total drive    : {result.total_drive_time_min:.1f} min")
-    print(f"  Total charge   : {result.total_charge_time_min:.1f} min")
-    print(f"  Total time     : {result.total_time_min:.1f} min")
-    print(f"  Total cost     : {result.total_cost:.1f} TL")
-    print(f"  Total Z-score  : {result.total_z_score:.2f}")
-    print(f"  Battery at end : {result.battery_at_final_dest:.1f}%")
+    log.section("JOURNEY SUMMARY")
+    log.info(f"  Itinerary      : {result.itinerary}")
+    log.info(f"  Total legs     : {len(result.legs)}")
+    log.info(f"  Total distance : {result.total_distance_km:.1f} km")
+    log.info(f"  Total drive    : {result.total_drive_time_min:.1f} min")
+    log.info(f"  Total charge   : {result.total_charge_time_min:.1f} min")
+    log.info(f"  Total time     : {result.total_time_min:.1f} min")
+    log.info(f"  Total cost     : {result.total_cost:.1f} TL")
+    log.info(f"  Total Z-score  : {result.total_z_score:.2f}")
+    log.info(f"  Battery at end : {result.battery_at_final_dest:.1f}%")
 
     # Per-leg summary table
-    print(f"\n  {'Leg':<5} {'Route':<35} {'Time':<10} {'Cost':<10} {'Z':<10} {'End SOC'}")
-    print(f"  {'-'*5} {'-'*35} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
+    log.info(f"")
+    log.info(f"  {'Leg':<5} {'Route':<35} {'Dist(km)':<10} {'Time':<10} {'Cost':<10} {'Z':<10} {'End SOC'}")
+    log.info(f"  {'-'*5} {'-'*35} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
     for leg in result.legs:
         route_str = f"{leg.origin} -> {leg.destination}"
         if len(route_str) > 35:
             route_str = route_str[:32] + "..."
-        print(f"  {leg.leg_index+1:<5} {route_str:<35} "
-              f"{leg.route.total_time_min:<10.1f} "
-              f"{leg.route.total_cost:<10.1f} "
-              f"{leg.route.z_score:<10.2f} "
-              f"{leg.route.battery_at_destination_pct:.1f}%")
-    print(f"{'='*60}\n")
+        log.info(f"  {leg.leg_index+1:<5} {route_str:<35} "
+                 f"{leg.route.total_distance_km:<10.1f} "
+                 f"{leg.route.total_time_min:<10.1f} "
+                 f"{leg.route.total_cost:<10.1f} "
+                 f"{leg.route.z_score:<10.2f} "
+                 f"{leg.route.battery_at_destination_pct:.1f}%")
+    log.info(f"{'='*90}")

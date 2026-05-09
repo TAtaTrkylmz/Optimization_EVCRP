@@ -41,6 +41,7 @@ class RouteResult:
     total_wait_time_min: float
     total_time_min: float
     total_cost: float
+    total_distance_km: float
     z_score: float
     battery_at_destination_pct: float
     is_partial: bool = False            # True when route couldn't reach destination
@@ -96,6 +97,10 @@ class MultiLegResult:
     @property
     def total_z_score(self) -> float:
         return sum(leg.route.z_score for leg in self.legs)
+
+    @property
+    def total_distance_km(self) -> float:
+        return sum(leg.route.total_distance_km for leg in self.legs)
 
     @property
     def battery_at_final_dest(self) -> float:

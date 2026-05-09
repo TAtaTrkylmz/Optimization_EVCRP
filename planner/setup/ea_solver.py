@@ -11,11 +11,12 @@ import random
 import numpy as np
 
 from planner.setup.config import (
-    ANXIETY_THRESHOLD, B_MAX, ENERGY_COST_PER_PCT, CHARGE_STEP_PCT,
+    ANXIETY_RANGE_KM, B_MAX, ENERGY_COST_PER_KWH, CHARGE_STEP_PCT,
     DC_EFFICIENCY, EA_CROSSOVER_RATE, EA_GENERATIONS, EA_MUTATION_RATE,
     EA_POP_SIZE, EA_TOURNAMENT_K, UserPreferences,
 )
 from planner.setup.models import ChargingStop, RouteResult
+from planner.setup.logger import log
 from api.mocker import get_mock_station_occupancy
 
 
@@ -32,6 +33,12 @@ def charge_time_min(charge_pct: float, max_kw: float, cap_kwh: float) -> float:
     return (kwh / kw_eff) * 60.0
 
 
+def _energy_cost_tl(energy_pct: float, cap_kwh: float) -> float:
+    """Convert energy spent (%) to cost in TL using kWh-based pricing."""
+    kwh = (energy_pct / 100.0) * cap_kwh
+    return kwh * ENERGY_COST_PER_KWH
+
+
 # ---------------------------------------------------------------------------
 # Plan evaluation
 # ---------------------------------------------------------------------------
@@ -44,6 +51,7 @@ def evaluate_plan(
     station_kw: np.ndarray,
     station_meta: list[tuple[str, str]],
     prefs: UserPreferences,
+    road_km_mat: np.ndarray | None = None,
 ) -> tuple[float, dict | None]:
     """Simulate a charging plan and compute the Z-score.
 
@@ -53,6 +61,7 @@ def evaluate_plan(
     b_floor = prefs.battery_min_enroute_pct
     b_ceil = prefs.battery_max_enroute_pct
     cap = prefs.battery_capacity_kwh
+    anxiety_thr = prefs.anxiety_threshold
 
     # Build sorted path with origin/dest
     charge_map: dict[int, float] = {}
@@ -66,7 +75,8 @@ def evaluate_plan(
     total_drive = 0.0
     total_ct = 0.0
     total_wt = 0.0
-    total_energy_spent = 0.0           # total energy consumed
+    total_energy_spent = 0.0           # total energy consumed (%)
+    total_distance = 0.0               # total road distance (km)
     total_anx = 0.0
     current_time_min = 0.0
 
@@ -90,10 +100,12 @@ def evaluate_plan(
         e = energy_mat[i, j]
         battery -= e
         total_energy_spent += e          # accumulate energy spent on this segment
+        if road_km_mat is not None:
+            total_distance += road_km_mat[i, j]
         if battery < b_floor - 0.01:
             return INF, None
 
-        total_anx += max(0.0, ANXIETY_THRESHOLD - battery)
+        total_anx += max(0.0, anxiety_thr - battery)
         
         drive_t = time_mat[i, j]
         total_drive += drive_t
@@ -102,7 +114,7 @@ def evaluate_plan(
     if battery < prefs.battery_end_min_pct - 0.01:
         return INF, None
 
-    total_cc = total_energy_spent * ENERGY_COST_PER_PCT
+    total_cc = _energy_cost_tl(total_energy_spent, cap)
 
     z = (prefs.w_time * (total_drive + total_ct + total_wt)
          + prefs.w_cost * total_cc
@@ -116,6 +128,7 @@ def evaluate_plan(
         "total_wt": total_wt,
         "total_cc": total_cc,
         "total_energy_spent": total_energy_spent,
+        "total_distance": total_distance,
         "battery_dest": battery,
         "z": z,
     }
@@ -135,14 +148,17 @@ def build_result(
     station_meta: list[tuple[str, str]],
     coords: list[tuple[float, float]],
     prefs: UserPreferences,
+    road_km_mat: np.ndarray | None = None,
 ) -> RouteResult:
     """Convert a path + charge map into a full RouteResult."""
     n = len(coords)
     stops: list[ChargingStop] = []
     total_drive = total_ct = total_wt = 0.0
-    total_energy_spent = 0.0           # total energy consumed driving (for cost)
+    total_energy_spent = 0.0           # total energy consumed driving (%)
+    total_distance = 0.0               # total road distance (km)
     battery = prefs.battery_start_pct
     cap = prefs.battery_capacity_kwh
+    anxiety_thr = prefs.anxiety_threshold
     current_time_min = 0.0
 
     for step in range(len(path) - 1):
@@ -154,7 +170,7 @@ def build_result(
             
             wt = get_mock_station_occupancy(sid, current_time_min)["wait_time_min"]
             ct = charge_time_min(q, kw, cap)
-            cc = q * ENERGY_COST_PER_PCT
+            cc = _energy_cost_tl(q, cap)
             
             stops.append(ChargingStop(
                 node_index=i, station_id=sid,
@@ -176,6 +192,8 @@ def build_result(
         e = energy_mat[i, j]
         battery -= e
         total_energy_spent += e          # accumulate energy spent
+        if road_km_mat is not None:
+            total_distance += road_km_mat[i, j]
         drive_t = time_mat[i, j]
         total_drive += drive_t
         current_time_min += drive_t
@@ -183,13 +201,13 @@ def build_result(
     # TODO: add POI-based suggestions once POI CSV is available.
     # See _generate_suggestions (commented out) for the logic skeleton.
 
-    # Cost = total energy consumed driving × rate per %
-    total_cc = total_energy_spent * ENERGY_COST_PER_PCT
+    # Cost = total energy consumed driving in kWh × rate per kWh
+    total_cc = _energy_cost_tl(total_energy_spent, cap)
 
     z = (prefs.w_time * (total_drive + total_ct + total_wt)
          + prefs.w_cost * total_cc
          + prefs.w_anxiety * sum(
-             max(0, ANXIETY_THRESHOLD - s.battery_on_arrival_pct) for s in stops))
+             max(0, anxiety_thr - s.battery_on_arrival_pct) for s in stops))
 
     return RouteResult(
         rank=rank,
@@ -200,6 +218,7 @@ def build_result(
         total_wait_time_min=round(total_wt, 1),
         total_time_min=round(total_drive + total_ct + total_wt, 1),
         total_cost=round(total_cc, 1),
+        total_distance_km=round(total_distance, 1),
         z_score=round(z, 2),
         battery_at_destination_pct=round(max(0, battery), 1),
     )
@@ -376,6 +395,7 @@ def solve(
     station_meta: list[tuple[str, str]],
     coords: list[tuple[float, float]],
     prefs: UserPreferences,
+    road_km_mat: np.ndarray | None = None,
 ) -> tuple[RouteResult, list[dict], list[float]]:
     """Run the evolutionary algorithm.
 
@@ -402,7 +422,7 @@ def solve(
 
     def _eval(stops):
         key = _key(stops)
-        z, det = evaluate_plan(stops, n, energy_mat, time_mat, station_kw, station_meta, prefs)
+        z, det = evaluate_plan(stops, n, energy_mat, time_mat, station_kw, station_meta, prefs, road_km_mat)
         if key not in seen and z < INF:
             seen.add(key)
             all_evaluated.append({
@@ -411,6 +431,7 @@ def solve(
                 "n_stops": len([q for _, q in stops if q > 0]),
                 "total_time": det["total_drive"] + det["total_ct"] + det["total_wt"],
                 "cost": det["total_cc"],
+                "distance": det["total_distance"],
                 "dest_soc": det["battery_dest"],
                 "path": det["path"],
                 "charge_map": det["charge_map"],
@@ -458,13 +479,13 @@ def solve(
 
         if (gen + 1) % 20 == 0 or gen == 0 or no_improve_count >= 50 or gen == EA_GENERATIONS - 1:
             feas = sum(1 for f in fitnesses if f < INF)
-            print(f"       gen {gen+1:>3}/{EA_GENERATIONS}: "
-                  f"best Z={best_z:.1f}  feasible={feas}/{len(population)}  "
-                  f"unique={len(all_evaluated)}")
+            log.step(f"gen {gen+1:>3}/{EA_GENERATIONS}: "
+                     f"best Z={best_z:.1f}  feasible={feas}/{len(population)}  "
+                     f"unique={len(all_evaluated)}")
                   
         # Break if no improvement for 50 generations
         if no_improve_count >= 50:
-            print(f"       -> Early stopping at gen {gen+1} (no improvement for 50 gens)")
+            log.step(f"Early stopping at gen {gen+1} (no improvement for 50 gens)")
             break
 
     # Sort all evaluated solutions
@@ -477,6 +498,7 @@ def solve(
         best_route = build_result(
             1, best["path"], best["charge_map"],
             energy_mat, time_mat, station_kw, station_meta, coords, prefs,
+            road_km_mat,
         )
 
     return best_route, all_evaluated, best_per_gen

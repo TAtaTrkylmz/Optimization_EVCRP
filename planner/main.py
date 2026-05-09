@@ -30,9 +30,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from planner.setup.config import UserPreferences
-from planner.setup.ev_vehicle import find_vehicle_by_id, print_vehicle_banner
+from planner.setup.ev_vehicle import find_vehicle_by_id, log_vehicle_banner
 from planner.pipeline import plan_journey
 from planner.setup.visualization import show_all_plots
+from planner.setup.logger import log
 from api.mocker import set_occupancy_seed
 
 
@@ -99,6 +100,7 @@ def _format_leg(leg, leg_idx, total_legs) -> str:
         f"{'-'*50}",
         f"  LEG {leg_idx+1}/{total_legs}:  {leg.origin} -> {leg.destination}",
         f"  Z-score       : {r.z_score:.2f}",
+        f"  Distance      : {r.total_distance_km:.1f} km",
         f"  Drive time    : {r.total_drive_time_min:.1f} min",
         f"  Charge time   : {r.total_charge_time_min:.1f} min",
         f"  Total time    : {r.total_time_min:.1f} min",
@@ -140,7 +142,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Load real vehicle data from the EV database
     vehicle = find_vehicle_by_id(args.car)
-    print_vehicle_banner(vehicle)
+    log_vehicle_banner(vehicle)
 
     prefs = UserPreferences(
         source=args.source,
@@ -149,6 +151,7 @@ def main(argv: list[str] | None = None) -> None:
         battery_end_min_pct=args.battery_end,
         battery_capacity_kwh=vehicle.battery_kwh,
         consumption_kwh_per_100km=vehicle.consumption_kwh_per_100km,
+        range_km=vehicle.range_km,
         priority_time=args.w_time,
         priority_cost=args.w_cost,
         priority_anxiety=args.w_anxiety,
@@ -164,8 +167,8 @@ def main(argv: list[str] | None = None) -> None:
         result = plan_journey(prefs, live_traffic=args.live_traffic,
                               weather_seed=args.weather_seed)
     except RuntimeError as e:
-        print(f"\n[!] PLANNING FAILED:")
-        print(f"    {e}")
+        log.warn("PLANNING FAILED:")
+        log.step(str(e))
         sys.exit(1)
 
     # Build per-leg details text blob
@@ -181,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(full_text + "\n", encoding="utf-8")
-        print(f"Results written to: {args.output.resolve()}")
+        log.info(f"Results written to: {args.output.resolve()}")
 
     # Save plots
     save_name = _build_save_name(prefs)
