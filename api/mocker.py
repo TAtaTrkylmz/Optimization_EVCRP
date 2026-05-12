@@ -148,7 +148,7 @@ def get_mock_weather(
         sq_lon_min = rng.uniform(TURKEY_LON_MIN, TURKEY_LON_MAX - sq_lon_size)
 
         # Weather quality: 0.2 to 0.8 (never fully blocking, never fully clear)
-        quality = round(rng.uniform(0.2, 0.8), 2)
+        quality = round(rng.uniform(0.4, 0.8), 2)
 
         squares.append(WeatherSquare(
             lat_min=round(sq_lat_min, 4),

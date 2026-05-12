@@ -245,8 +245,6 @@ def greedy_baseline(
         for j in range(current + 1, n):
             if battery - energy_mat[current, j] >= b_floor:
                 farthest = j
-            else:
-                break
 
         if farthest == n - 1:
             break

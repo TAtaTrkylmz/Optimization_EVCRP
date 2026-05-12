@@ -73,7 +73,7 @@ class PlannerLogger:
 
     def warn(self, msg: str) -> None:
         """Warning line."""
-        print(f"{self._ts()}{self._elapsed()}  ⚠ {msg}")
+        print(f"{self._ts()}{self._elapsed()}  [!] {msg}")
 
     def banner(self, lines: list[str], char: str = "=", width: int = 60) -> None:
         """Print a multi-line banner block."""

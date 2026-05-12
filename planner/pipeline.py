@@ -118,9 +118,9 @@ def _build_partial_route(
     for j in range(1, n):
         e = energy_mat[current, j]
         if e > 900:   # unreachable edge
-            break
+            continue
         if battery - e < b_floor:
-            break
+            continue
         battery -= e
         path.append(j)
 
