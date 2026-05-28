@@ -30,14 +30,18 @@ python -m planner.main --car 3290 --source "Izmir, Turkey" --destinations "Balik
 
 ## Velocity and Energy Model
 
-Energy and time are decoupled for physical accuracy:
+Energy and time are optimized dynamically using per-segment velocity genes in the Evolutionary Algorithm:
 
-- **Energy**: Always computed at eco speed (70 km/h) to maximize range and ensure route feasibility.
-- **Time**: Computed at cruise speed (90 km/h) or from real-world TomTom data.
-- **Vehicle Specs**: Battery capacity and efficiency come from the ev-database.org JSON (`--car` flag).
-- **Cost**: Total energy consumed driving × flat rate (TL per %).
-
-*Note: Weather penalties apply to time only (not energy).*
+- **Per-Segment Speed Gene**: The EA chromosome is structured as `[(station_node, charge_pct, speed_factor), ...]`. The `speed_factor` ($s$) is evolved dynamically for each segment in the range $[0.7, 1.3]$, scaling the vehicle speed $v = 70 \cdot s$ (km/h) between 49 km/h (highly eco) and 91 km/h (aggressive).
+- **TomTom Speed Limits**: The speed factor for each edge is capped using the average real-world driving speed derived from cached TomTom data, plus 10% headroom:
+  $$s_{\text{max}} = \min\left(1.3, \frac{v_{\text{TomTom}} \cdot 1.10}{70}\right)$$
+- **Aerodynamic Drag Energy Scaling**: Energy consumption scales non-linearly with speed to model aerodynamic resistance, using a drag exponent of 1.6:
+  $$E = E_{\text{eco}} \cdot s^{1.6}$$
+  where $E_{\text{eco}}$ is the base energy consumption at the eco baseline speed of 70 km/h.
+- **Travel Time Scaling**: Travel time scales inversely with the chosen speed factor relative to the baseline speed used to calculate the path:
+  $$T = T_{\text{base}} \cdot \frac{v_{\text{default}}}{70 \cdot s}$$
+  where $v_{\text{default}}$ is the baseline speed used to populate the cost matrix (cached TomTom average speed for cache hits, or cruise speed 90 km/h for fallback cache misses).
+- **Weather Penalties**: Weather multiplier affects time only ($T_{\text{base}}$ is pre-multiplied by the weather penalty).
 
 ## Project Structure
 ```

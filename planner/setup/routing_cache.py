@@ -42,6 +42,16 @@ def _get_connection() -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reverse_geocode_cache (
+            lat REAL,
+            lon REAL,
+            label TEXT,
+            PRIMARY KEY (lat, lon)
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -170,5 +180,23 @@ def save_geocode_to_cache(query: str, lat: float, lon: float) -> None:
         conn.execute(
             "INSERT OR REPLACE INTO geocode_cache (query, lat, lon) VALUES (?, ?, ?)", 
             (query.strip().lower(), lat, lon)
+        )
+        conn.commit()
+
+def get_reverse_geocode_from_cache(lat: float, lon: float) -> str | None:
+    """Retrieve reverse geocoded label from the cache."""
+    r_lat, r_lon = _round_coord(lat), _round_coord(lon)
+    with _get_connection() as conn:
+        cursor = conn.execute("SELECT label FROM reverse_geocode_cache WHERE lat=? AND lon=?", (r_lat, r_lon))
+        row = cursor.fetchone()
+        return str(row[0]) if row else None
+
+def save_reverse_geocode_to_cache(lat: float, lon: float, label: str) -> None:
+    """Save reverse geocoded label to the cache."""
+    r_lat, r_lon = _round_coord(lat), _round_coord(lon)
+    with _get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO reverse_geocode_cache (lat, lon, label) VALUES (?, ?, ?)", 
+            (r_lat, r_lon, label.strip())
         )
         conn.commit()

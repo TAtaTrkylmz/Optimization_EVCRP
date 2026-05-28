@@ -4,3 +4,7 @@
 numpy>=1.26
 pandas==2.2.3
 requests==2.32.3
+streamlit>=1.45
+qrcode[pil]>=8.0
+matplotlib>=3.8
+contextily>=1.6

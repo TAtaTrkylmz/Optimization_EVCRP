@@ -82,8 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "Use the same seed to reproduce experiments.")
     p.add_argument("--occupancy-seed", type=int, default=0,
                    help="Seed offset for station occupancy randomization (default: 0).")
-    p.add_argument("--live-traffic", action="store_true",
-                   help="Fetch real-world live traffic when planning routes (slower, hits API limits).")
+    # NOTE: live-traffic feature removed — it consumed too many API calls.
+    # All routes now use the offline cache + haversine fallback.
     p.add_argument("-o", "--output", type=Path, default=None,
                    help="Write summary to a text file")
     return p
@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Run the pipeline
     try:
-        result = plan_journey(prefs, live_traffic=args.live_traffic,
+        result = plan_journey(prefs, live_traffic=False,
                               weather_seed=args.weather_seed)
     except RuntimeError as e:
         log.warn("PLANNING FAILED:")

@@ -45,6 +45,7 @@ class RouteResult:
     z_score: float
     battery_at_destination_pct: float
     is_partial: bool = False            # True when route couldn't reach destination
+    segment_speeds: list[float] = field(default_factory=list)
 
     # NOTE: POI-based suggestions will be added once the POI CSV data is ready.
     # The logic skeleton is kept commented in ea_solver.py _build_result.

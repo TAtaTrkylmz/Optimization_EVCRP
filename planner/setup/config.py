@@ -36,6 +36,12 @@ BASE_VELOCITY_KMH = 70.0         # eco speed — used for ENERGY computation
 CRUISE_VELOCITY_KMH = 90.0       # cruise speed — used for TIME computation
 VELOCITY_EXPONENT = 1.6           # drag exponent for consumption scaling
 
+# ── Speed gene (per-segment velocity evolved by the EA) ──
+SPEED_FACTOR_MIN = 0.7            # min multiplier on base velocity (49 km/h)
+SPEED_FACTOR_MAX = 1.3            # max multiplier on base velocity (91 km/h)
+SPEED_FACTOR_STEP = 0.1           # mutation granularity
+SPEED_LIMIT_HEADROOM = 1.10       # allow up to speed_limit + 10%
+
 # ── Corridor ──
 MAX_CROSS_TRACK_KM = 150.0
 MAX_STATIONS_IN_MODEL = 200

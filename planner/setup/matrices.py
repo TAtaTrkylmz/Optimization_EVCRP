@@ -1,24 +1,30 @@
 """
 NumPy matrix computations: haversine, energy, travel time.
 
-Adaptive velocity model:
-    Energy -> ALWAYS at eco speed (70 km/h, multiplier 1.0)
-              This maximizes range and ensures all physically possible
-              routes are feasible. The system automatically "reduces speed"
-              to reach distant stations.
+Adaptive velocity model with per-segment speed gene:
+    Energy -> Computed using the EA's speed_factor gene per segment.
+              E = base_consumption × (v / v_eco)^α
+              where v = base_velocity × speed_factor, v_eco = 70 km/h,
+              and α = VELOCITY_EXPONENT (1.6, aerodynamic drag).
 
-    Time   -> At cruise speed (90 km/h) or TomTom real-world data.
-              This gives realistic travel time estimates for the Z-score.
+    Time   -> Computed from the chosen speed, or TomTom real-world data
+              if cached (whichever gives the more accurate estimate).
 
     Weather -> Applies a time multiplier (does NOT affect energy).
+
+    Speed limits -> Derived from cached TomTom data (road_km / drive_min).
+                    Max allowed speed = speed_limit × SPEED_LIMIT_HEADROOM (1.10).
+                    Stored in speed_limit_mat for the EA to use as a ceiling.
 """
 from __future__ import annotations
 
 import numpy as np
 
-from planner.setup.config import BASE_VELOCITY_KMH, CRUISE_VELOCITY_KMH
+from planner.setup.config import (
+    BASE_VELOCITY_KMH, CRUISE_VELOCITY_KMH,
+    SPEED_FACTOR_MAX, SPEED_LIMIT_HEADROOM,
+)
 from planner.setup.routing_cache import load_routes_bulk, _round_coord
-from planner.setup.tomtom import route_summary
 from planner.setup.logger import log
 from api.mocker import WeatherSquare, get_segment_weather_penalty
 
@@ -43,29 +49,28 @@ def build_cost_matrices(
     base_velocity_kmh: float = BASE_VELOCITY_KMH,
     coords: list[tuple[float, float]] = None,
     api_key: str = None,
-    live_traffic: bool = False,
+    live_traffic: bool = False,      # kept for call-site compat, always ignored
     weather_squares: list[WeatherSquare] | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Calculate Energy (%), Time (min), and Real-Road-KM matrices.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Calculate Energy-at-eco (%), Time (min), Road-KM, and Speed-Limit matrices.
 
-    Adaptive velocity model:
-      - ENERGY is always computed at eco speed (70 km/h, multiplier 1.0)
-        to maximize range and ensure route feasibility.
-      - TIME is computed at cruise speed (90 km/h) or TomTom real-world data.
-      - If even eco speed can't handle an edge (>99% battery), mark unreachable.
-      - Weather penalties apply to TIME only (not energy).
+    The energy_mat now contains the BASE energy at eco speed (speed_factor=1.0).
+    The EA solver will scale it using the speed_factor gene per segment.
 
     Returns:
-        (energy_mat, time_mat, road_km_mat)
+        (energy_mat, time_mat, road_km_mat, speed_limit_mat)
+
+        speed_limit_mat[i,j] = max allowed speed_factor for edge (i,j).
+        Derived from cached TomTom data: (avg_speed / BASE_VELOCITY) × HEADROOM.
+        For edges without cached data, defaults to SPEED_FACTOR_MAX.
     """
     n = dist_mat.shape[0]
     energy_mat = np.zeros((n, n), dtype=float)
     time_mat = np.zeros((n, n), dtype=float)
     road_km_mat = np.zeros((n, n), dtype=float)
+    speed_limit_mat = np.full((n, n), SPEED_FACTOR_MAX, dtype=float)
 
     cache_hits = 0
-    api_hits = 0
-    api_rate_limit_hit = False
 
     # ── Bulk-load cached routes in ONE DB connection ──
     route_dict: dict = {}
@@ -81,45 +86,33 @@ def build_cost_matrices(
             dist_km = dist_mat[i, j] * road_factor
             base_time_min = None
             
-            # Try to get exact real-world route if coordinates are provided
+            # Try to get exact real-world route from cache
             if coords is not None:
                 lat1, lon1 = coords[i]
                 lat2, lon2 = coords[j]
                 rlat1, rlon1 = _round_coord(lat1), _round_coord(lon1)
                 rlat2, rlon2 = _round_coord(lat2), _round_coord(lon2)
                 
-                # Live traffic: hit API directly (rare usage)
-                if live_traffic and api_key and not api_rate_limit_hit:
-                    try:
-                        km, mins = route_summary(lat1, lon1, lat2, lon2, api_key, use_cache=False, live_traffic=True)
-                        if km != float('inf'):
-                            dist_km = km
-                            base_time_min = mins
-                            api_hits += 1
-                    except RuntimeError as e:
-                        if "403" in str(e) or "429" in str(e):
-                            log.warn(f"{e} Disabling live API for remainder of this leg.")
-                            api_rate_limit_hit = True
-                    except Exception:
-                        pass
-                
-                # Standard path: fast dict lookup from bulk-loaded cache
-                if base_time_min is None:
-                    key = (rlat1, rlon1, rlat2, rlon2)
-                    cached = route_dict.get(key)
-                    if cached is not None:
-                        dist_km = cached[0]
-                        base_time_min = cached[1]
-                        cache_hits += 1
+                key = (rlat1, rlon1, rlat2, rlon2)
+                cached = route_dict.get(key)
+                if cached is not None:
+                    dist_km = cached[0]
+                    base_time_min = cached[1]
+                    cache_hits += 1
+                    
+                    # Derive speed limit from cached data
+                    if base_time_min > 0.01 and dist_km > 0.01:
+                        avg_speed_kmh = dist_km / (base_time_min / 60.0)
+                        speed_limit_factor = (avg_speed_kmh / base_velocity_kmh) * SPEED_LIMIT_HEADROOM
+                        speed_limit_mat[i, j] = max(speed_limit_factor, 0.7)  # never below min
 
             road_km_mat[i, j] = dist_km
                         
             if dist_km < 1e-3:
                 continue
 
-            # ── ENERGY: always at eco speed (70 km/h) ──
-            # This ensures maximum range and feasibility.
-            # No multiplier at eco speed (multiplier = 1.0).
+            # ── ENERGY: at eco speed (speed_factor=1.0) ──
+            # The EA solver will scale this by (speed_factor)^VELOCITY_EXPONENT
             base_kwh = (dist_km / 100.0) * consumption_kwh_per_100km
             energy_pct = (base_kwh / battery_capacity_kwh) * 100.0
                 
@@ -150,8 +143,8 @@ def build_cost_matrices(
 
     if coords is not None:
         total_edges = n * (n - 1)
-        fallback_count = total_edges - cache_hits - api_hits
+        fallback_count = total_edges - cache_hits
         log.step(f"Road data: {cache_hits}/{total_edges} from DB cache, "
-                 f"{api_hits} live API, {fallback_count} haversine fallback")
+                 f"{fallback_count} haversine fallback")
 
-    return energy_mat, time_mat, road_km_mat
+    return energy_mat, time_mat, road_km_mat, speed_limit_mat

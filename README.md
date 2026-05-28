@@ -20,7 +20,7 @@ The planner doesn't just find the shortest path; it evolves an optimal **chargin
     - **Cost**: Total TL cost $\cdot$ Weight
     - **Anxiety**: Low battery penalty below 20% $\cdot$ Weight
 3.  **Iteration (Evolution)**: Over 100 generations, routes "recombine" and "mutate." The solver handles complex constraints like $B_{floor} \le Battery \le B_{ceil}$ across thousands of station permutations.
-4.  **Dynamic Eco-Fallback**: Vehicle velocity (up to 140 km/h) is adjusted per segment. If a high speed is physically impossible for a specific leg between chargers, the system auto-falls back to "Eco-speed" (70 km/h).
+4.  **Evolvable Segment Velocity**: Vehicle velocity factor ($s \in [0.7, 1.3]$) is evolved as a DNA gene per segment. Consumption is scaled using an aerodynamic drag model $E = E_{\text{eco}} \cdot s^{1.6}$, and speeds are capped using TomTom speed limits ($s_{\text{max}} = \min(1.3, v_{\text{TomTom}} \cdot 1.10 / 70)$) to prevent unrealistic speeds, naturally slowing down on city roads and speeding up on highways.
 5.  **Multi-Leg ALNS**: For trips with multiple destinations, an **Adaptive Large Neighborhood Search (ALNS)** inspired orchestrator manages battery "handoffs" between cities to optimize the global journey efficiency.
 
 ## 🌍 Real-World Road Database (Offline Cache)
@@ -76,6 +76,10 @@ This generates:
   - `main.py`: CLI entry point.
   - `pipeline.py`: Orchestrates multi-leg journeys and ALNS.
   - `setup/`: Computational engine (EA solver, math model, TomTom API).
+- `web/`: Streamlit web app (jury demo UI).
+  - `app.py`: Main Streamlit entry point.
+  - `style.css`: Mobile-first custom CSS.
+  - `.streamlit/config.toml`: Theme and server configuration.
 - `data/`: Real Geocoded EPDK charging station database.
 - `output/`: Generated maps and convergence plots.
 - `doc/`: Mathematical model formulations and technical background.
@@ -84,3 +88,62 @@ This generates:
 ## 📧 Requirements
 - Python 3.10+
 - TomTom API Key (configured in `.env`)
+
+## 🌐 Web App (Streamlit — Jury Demo)
+
+A mobile-first web interface for the route planner. The jury can access it by scanning a QR code on their smartphones.
+
+### Setup
+
+1. **Install dependencies** (from the repository root):
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Allow network access through Windows Firewall** (one-time, required for phone access):
+   ```powershell
+   netsh advfirewall firewall add rule name="Streamlit" dir=in action=allow protocol=TCP localport=8501
+   ```
+
+3. **Launch the app**:
+   ```bash
+   streamlit run web/app.py
+   ```
+   The app binds to `0.0.0.0:8501` so any device on the same Wi-Fi network can connect.
+
+### Jury Access via QR Code
+
+1. Open the sidebar (hamburger menu on mobile, or click `>` on desktop).
+2. A QR code and URL (e.g. `http://192.168.1.42:8501`) are displayed.
+3. The jury scans the QR code with their phone camera → the app opens in their browser.
+4. **Both the presenter's laptop and the jury's phones must be on the same Wi-Fi network.**
+
+### Verification
+
+After launching, verify the app is working:
+
+```bash
+# Check health endpoint
+curl http://localhost:8501/_stcore/health
+# Expected output: "ok"
+```
+
+To test the pipeline integration independently:
+
+```bash
+python -c "
+import matplotlib; matplotlib.use('Agg')
+import sys; sys.path.insert(0, '.')
+from planner.setup.ev_vehicle import find_vehicle_by_id
+from planner.setup.config import UserPreferences
+from planner.pipeline import plan_journey
+v = find_vehicle_by_id(3403)
+prefs = UserPreferences(source='Izmir, Turkey', destinations=['Ankara, Turkey'],
+    battery_start_pct=85, battery_end_min_pct=20,
+    battery_capacity_kwh=v.battery_kwh,
+    consumption_kwh_per_100km=v.consumption_kwh_per_100km,
+    range_km=v.range_km)
+r = plan_journey(prefs)
+print(f'OK: {r.itinerary}, Z={r.total_z_score:.2f}')
+"
+```

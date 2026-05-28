@@ -14,6 +14,9 @@ from planner.setup.config import (
     ANXIETY_RANGE_KM, B_MAX, ENERGY_COST_PER_KWH, CHARGE_STEP_PCT,
     DC_EFFICIENCY, EA_CROSSOVER_RATE, EA_GENERATIONS, EA_MUTATION_RATE,
     EA_POP_SIZE, EA_TOURNAMENT_K, UserPreferences,
+    SPEED_FACTOR_MIN, SPEED_FACTOR_MAX, SPEED_FACTOR_STEP,
+    SPEED_LIMIT_HEADROOM, VELOCITY_EXPONENT, BASE_VELOCITY_KMH,
+    CRUISE_VELOCITY_KMH,
 )
 from planner.setup.models import ChargingStop, RouteResult
 from planner.setup.logger import log
@@ -44,7 +47,7 @@ def _energy_cost_tl(energy_pct: float, cap_kwh: float) -> float:
 # ---------------------------------------------------------------------------
 
 def evaluate_plan(
-    stops: list[tuple[int, float]],
+    stops: list[tuple[int, float, float]],
     n: int,
     energy_mat: np.ndarray,
     time_mat: np.ndarray,
@@ -52,6 +55,7 @@ def evaluate_plan(
     station_meta: list[tuple[str, str]],
     prefs: UserPreferences,
     road_km_mat: np.ndarray | None = None,
+    speed_limit_mat: np.ndarray | None = None,
 ) -> tuple[float, dict | None]:
     """Simulate a charging plan and compute the Z-score.
 
@@ -65,9 +69,11 @@ def evaluate_plan(
 
     # Build sorted path with origin/dest
     charge_map: dict[int, float] = {}
-    for idx, q in stops:
+    speed_map: dict[int, float] = {0: 1.0}  # default origin speed factor to 1.0
+    for idx, q, sf in stops:
         if 0 < idx < n - 1 and q > 0:
             charge_map[idx] = charge_map.get(idx, 0) + q
+        speed_map[idx] = sf
 
     path = sorted(set([0] + list(charge_map.keys()) + [n - 1]))
 
@@ -79,6 +85,7 @@ def evaluate_plan(
     total_distance = 0.0               # total road distance (km)
     total_anx = 0.0
     current_time_min = 0.0
+    segment_speeds = []
 
     for step in range(len(path) - 1):
         i, j = path[step], path[step + 1]
@@ -97,9 +104,22 @@ def evaluate_plan(
             total_ct += ct
             current_time_min += wt + ct
 
-        e = energy_mat[i, j]
+        # Speed limit handling from TomTom speed_limit_mat
+        max_sf = SPEED_FACTOR_MAX
+        if speed_limit_mat is not None:
+            max_sf = speed_limit_mat[i, j]
+
+        # Determine requested speed factor, clamp between min/max
+        sf = speed_map.get(i, 1.0)
+        actual_sf = max(SPEED_FACTOR_MIN, min(sf, max_sf))
+        v_new = BASE_VELOCITY_KMH * actual_sf
+        segment_speeds.append(v_new)
+
+        # Scale energy consumption
+        e = energy_mat[i, j] * (actual_sf ** VELOCITY_EXPONENT)
         battery -= e
         total_energy_spent += e          # accumulate energy spent on this segment
+        
         if road_km_mat is not None:
             total_distance += road_km_mat[i, j]
         if battery < b_floor - 0.01:
@@ -107,7 +127,15 @@ def evaluate_plan(
 
         total_anx += max(0.0, anxiety_thr - battery)
         
-        drive_t = time_mat[i, j]
+        # Scale drive time
+        if speed_limit_mat is not None and speed_limit_mat[i, j] < SPEED_FACTOR_MAX - 1e-4:
+            # Cache hit: speed limit was derived from cached average speed
+            v_default = (speed_limit_mat[i, j] / SPEED_LIMIT_HEADROOM) * BASE_VELOCITY_KMH
+        else:
+            # Cache miss or haversine fallback
+            v_default = CRUISE_VELOCITY_KMH
+
+        drive_t = time_mat[i, j] * (v_default / v_new)
         total_drive += drive_t
         current_time_min += drive_t
 
@@ -130,6 +158,7 @@ def evaluate_plan(
         "total_energy_spent": total_energy_spent,
         "total_distance": total_distance,
         "battery_dest": battery,
+        "segment_speeds": segment_speeds,
         "z": z,
     }
 
@@ -149,6 +178,8 @@ def build_result(
     coords: list[tuple[float, float]],
     prefs: UserPreferences,
     road_km_mat: np.ndarray | None = None,
+    speed_limit_mat: np.ndarray | None = None,
+    segment_speeds: list[float] | None = None,
 ) -> RouteResult:
     """Convert a path + charge map into a full RouteResult."""
     n = len(coords)
@@ -189,17 +220,25 @@ def build_result(
             current_time_min += wt + ct
             battery += q
             
-        e = energy_mat[i, j]
+        # Speed handling
+        v_new = segment_speeds[step] if (segment_speeds is not None and step < len(segment_speeds)) else CRUISE_VELOCITY_KMH
+        actual_sf = v_new / BASE_VELOCITY_KMH
+        
+        e = energy_mat[i, j] * (actual_sf ** VELOCITY_EXPONENT)
         battery -= e
         total_energy_spent += e          # accumulate energy spent
         if road_km_mat is not None:
             total_distance += road_km_mat[i, j]
-        drive_t = time_mat[i, j]
+
+        # Time handling
+        if speed_limit_mat is not None and speed_limit_mat[i, j] < SPEED_FACTOR_MAX - 1e-4:
+            v_default = (speed_limit_mat[i, j] / SPEED_LIMIT_HEADROOM) * BASE_VELOCITY_KMH
+        else:
+            v_default = CRUISE_VELOCITY_KMH
+
+        drive_t = time_mat[i, j] * (v_default / v_new)
         total_drive += drive_t
         current_time_min += drive_t
-
-    # TODO: add POI-based suggestions once POI CSV is available.
-    # See _generate_suggestions (commented out) for the logic skeleton.
 
     # Cost = total energy consumed driving in kWh × rate per kWh
     total_cc = _energy_cost_tl(total_energy_spent, cap)
@@ -221,6 +260,7 @@ def build_result(
         total_distance_km=round(total_distance, 1),
         z_score=round(z, 2),
         battery_at_destination_pct=round(max(0, battery), 1),
+        segment_speeds=segment_speeds if segment_speeds is not None else []
     )
 
 
@@ -232,12 +272,12 @@ def greedy_baseline(
     n: int,
     energy_mat: np.ndarray,
     prefs: UserPreferences,
-) -> list[tuple[int, float]]:
+) -> list[tuple[int, float, float]]:
     """Base case: charge to ceiling at the farthest reachable station, repeat."""
     battery = prefs.battery_start_pct
     b_ceil = prefs.battery_max_enroute_pct
     b_floor = prefs.battery_min_enroute_pct
-    stops: list[tuple[int, float]] = []
+    stops: list[tuple[int, float, float]] = [(0, 0.0, 1.0)]
     current = 0
 
     while current < n - 1:
@@ -255,7 +295,7 @@ def greedy_baseline(
             charge = max(0.0, b_ceil - battery)
             battery = min(battery + charge, b_ceil)
             if charge > 0 and farthest < n - 1:
-                stops.append((farthest, round(charge)))
+                stops.append((farthest, round(charge), 1.0))
             current = farthest
             continue
 
@@ -263,7 +303,7 @@ def greedy_baseline(
         charge = max(0.0, b_ceil - battery)
         battery = min(battery + charge, b_ceil)
         if charge > 0:
-            stops.append((farthest, round(charge)))
+            stops.append((farthest, round(charge), 1.0))
         current = farthest
 
     return stops
@@ -278,10 +318,10 @@ def _generate_initial_population(
     energy_mat: np.ndarray,
     prefs: UserPreferences,
     pop_size: int,
-) -> list[list[tuple[int, float]]]:
+) -> list[list[tuple[int, float, float]]]:
     """Diverse initial population: greedy + partial ceilings + random."""
     rng = random.Random(42)
-    population: list[list[tuple[int, float]]] = []
+    population: list[list[tuple[int, float, float]]] = []
 
     population.append(greedy_baseline(n, energy_mat, prefs))
 
@@ -295,7 +335,9 @@ def _generate_initial_population(
     # Stride patterns
     all_stations = list(range(1, n - 1))
     for step in [2, 3, 4]:
-        stops = [(idx, float(rng.choice([30, 40, 50, 60, 70, 80])))
+        origin_sf = float(rng.choice([0.8, 0.9, 1.0, 1.1, 1.2]))
+        stops = [(0, 0.0, origin_sf)] + [
+                 (idx, float(rng.choice([30, 40, 50, 60, 70, 80])), float(rng.choice([0.8, 0.9, 1.0, 1.1, 1.2])))
                  for idx in all_stations[::step]]
         population.append(stops)
 
@@ -303,8 +345,11 @@ def _generate_initial_population(
     while len(population) < pop_size:
         k = rng.randint(1, max(1, len(all_stations) // 2))
         chosen = sorted(rng.sample(all_stations, min(k, len(all_stations))))
-        stops = [(idx, float(min(rng.choice([20, 30, 40, 50, 60, 70, 80, 90, 100]),
-                                  prefs.battery_max_enroute_pct)))
+        origin_sf = float(rng.choice([0.8, 0.9, 1.0, 1.1, 1.2]))
+        stops = [(0, 0.0, origin_sf)] + [
+                 (idx, float(min(rng.choice([20, 30, 40, 50, 60, 70, 80, 90, 100]),
+                                  prefs.battery_max_enroute_pct)),
+                  float(rng.choice([0.8, 0.9, 1.0, 1.1, 1.2])))
                  for idx in chosen]
         population.append(stops)
 
@@ -312,73 +357,120 @@ def _generate_initial_population(
 
 
 def _mutate(
-    stops: list[tuple[int, float]],
+    stops: list[tuple[int, float, float]],
     n: int,
     b_ceil: float,
     rng: random.Random,
-) -> list[tuple[int, float]]:
-    """Random mutation: add/remove/tweak/swap/split."""
+) -> list[tuple[int, float, float]]:
+    """Random mutation: add/remove/tweak/swap/split/speed-tweak."""
     stops = list(stops)
+    if not stops or stops[0][0] != 0:
+        stops.insert(0, (0, 0.0, 1.0))
+        
     all_stations = list(range(1, n - 1))
+    origin_stop = stops[0]
+    station_stops = stops[1:]
+    
+    if all_stations and rng.random() < 0.2:
+        node, q, sf = origin_stop
+        sf_new = sf + rng.choice([-0.2, -0.1, -0.05, 0.05, 0.1, 0.2])
+        sf_new = max(SPEED_FACTOR_MIN, min(SPEED_FACTOR_MAX, round(sf_new / SPEED_FACTOR_STEP) * SPEED_FACTOR_STEP))
+        origin_stop = (node, q, float(sf_new))
+        return [origin_stop] + station_stops
+
     if not all_stations:
-        return stops
+        return [origin_stop] + station_stops
 
-    op = rng.choice(["add", "remove", "tweak", "swap", "split"])
+    op = rng.choice(["add", "remove", "tweak", "swap", "split", "speed"])
 
-    if op == "add" or not stops:
-        stops.append((rng.choice(all_stations),
-                       float(min(rng.choice([30, 50, 70, 90]), b_ceil))))
+    if op == "add" or not station_stops:
+        new_station = rng.choice(all_stations)
+        new_charge = float(min(rng.choice([30, 50, 70, 90]), b_ceil))
+        new_sf = float(rng.choice([0.8, 0.9, 1.0, 1.1, 1.2]))
+        station_stops.append((new_station, new_charge, new_sf))
 
-    elif op == "remove" and len(stops) > 1:
-        stops.pop(rng.randrange(len(stops)))
+    elif op == "remove" and len(station_stops) > 1:
+        station_stops.pop(rng.randrange(len(station_stops)))
 
-    elif op == "tweak" and stops:
-        i = rng.randrange(len(stops))
-        idx, q = stops[i]
-        stops[i] = (idx, float(max(5, min(b_ceil, q + rng.choice([-20, -10, -5, 5, 10, 20])))))
+    elif op == "tweak" and station_stops:
+        i = rng.randrange(len(station_stops))
+        idx, q, sf = station_stops[i]
+        q_new = float(max(5, min(b_ceil, q + rng.choice([-20, -10, -5, 5, 10, 20]))))
+        station_stops[i] = (idx, q_new, sf)
 
-    elif op == "swap" and stops:
-        i = rng.randrange(len(stops))
-        stops[i] = (rng.choice(all_stations), stops[i][1])
+    elif op == "swap" and station_stops:
+        i = rng.randrange(len(station_stops))
+        _, q, sf = station_stops[i]
+        station_stops[i] = (rng.choice(all_stations), q, sf)
 
-    elif op == "split" and stops:
-        i = rng.randrange(len(stops))
-        idx, q = stops[i]
+    elif op == "split" and station_stops:
+        i = rng.randrange(len(station_stops))
+        idx, q, sf = station_stops[i]
         if q >= 30:
             q1, q2 = round(q * 0.5), round(q * 0.5)
             neighbors = [s for s in all_stations if abs(s - idx) <= 3 and s != idx]
             if neighbors:
-                stops[i] = (idx, float(q1))
-                stops.append((rng.choice(neighbors), float(q2)))
+                station_stops[i] = (idx, float(q1), sf)
+                station_stops.append((rng.choice(neighbors), float(q2), float(rng.choice([0.8, 0.9, 1.0, 1.1, 1.2]))))
 
-    # Merge duplicates
-    merged: dict[int, float] = {}
-    for idx, q in stops:
-        merged[idx] = merged.get(idx, 0) + q
-    return [(idx, min(q, b_ceil)) for idx, q in sorted(merged.items())]
+    elif op == "speed" and station_stops:
+        i = rng.randrange(len(station_stops))
+        idx, q, sf = station_stops[i]
+        sf_new = sf + rng.choice([-0.2, -0.1, -0.05, 0.05, 0.1, 0.2])
+        sf_new = max(SPEED_FACTOR_MIN, min(SPEED_FACTOR_MAX, round(sf_new / SPEED_FACTOR_STEP) * SPEED_FACTOR_STEP))
+        station_stops[i] = (idx, q, float(sf_new))
+
+    merged: dict[int, tuple[float, float]] = {}
+    for idx, q, sf in station_stops:
+        if idx in merged:
+            prev_q, prev_sf = merged[idx]
+            merged[idx] = (prev_q + q, (prev_sf + sf) / 2.0)
+        else:
+            merged[idx] = (q, sf)
+
+    new_stations = []
+    for idx, (q, sf) in sorted(merged.items()):
+        new_stations.append((idx, float(min(q, b_ceil)), float(max(SPEED_FACTOR_MIN, min(SPEED_FACTOR_MAX, round(sf / SPEED_FACTOR_STEP) * SPEED_FACTOR_STEP)))))
+        
+    return [origin_stop] + new_stations
 
 
 def _crossover(
-    p1: list[tuple[int, float]],
-    p2: list[tuple[int, float]],
+    p1: list[tuple[int, float, float]],
+    p2: list[tuple[int, float, float]],
     b_ceil: float,
     rng: random.Random,
-) -> list[tuple[int, float]]:
-    """Merge parents: union of stations, averaged charges."""
-    combined: dict[int, list[float]] = {}
-    for idx, q in p1:
-        combined.setdefault(idx, []).append(q)
-    for idx, q in p2:
-        combined.setdefault(idx, []).append(q)
+) -> list[tuple[int, float, float]]:
+    """Merge parents: union of stations, averaged charges & speeds."""
+    if not p1 or p1[0][0] != 0:
+        p1 = [(0, 0.0, 1.0)] + [x for x in p1 if x[0] != 0]
+    if not p2 or p2[0][0] != 0:
+        p2 = [(0, 0.0, 1.0)] + [x for x in p2 if x[0] != 0]
 
-    child: list[tuple[int, float]] = []
+    sf_origin = (p1[0][2] + p2[0][2]) / 2.0
+    sf_origin = max(SPEED_FACTOR_MIN, min(SPEED_FACTOR_MAX, round(sf_origin / SPEED_FACTOR_STEP) * SPEED_FACTOR_STEP))
+    origin_stop = (0, 0.0, float(sf_origin))
+
+    combined: dict[int, list[tuple[float, float]]] = {}
+    for idx, q, sf in p1[1:]:
+        combined.setdefault(idx, []).append((q, sf))
+    for idx, q, sf in p2[1:]:
+        combined.setdefault(idx, []).append((q, sf))
+
+    child_stations: list[tuple[int, float, float]] = []
     for idx in sorted(combined):
         if rng.random() < 0.6:
-            avg = sum(combined[idx]) / len(combined[idx])
-            avg = round(avg / CHARGE_STEP_PCT) * CHARGE_STEP_PCT
-            avg = max(CHARGE_STEP_PCT, min(b_ceil, avg))
-            child.append((idx, float(avg)))
-    return child
+            vals = combined[idx]
+            avg_q = sum(v[0] for v in vals) / len(vals)
+            avg_q = round(avg_q / CHARGE_STEP_PCT) * CHARGE_STEP_PCT
+            avg_q = max(CHARGE_STEP_PCT, min(b_ceil, avg_q))
+            
+            avg_sf = sum(v[1] for v in vals) / len(vals)
+            avg_sf = max(SPEED_FACTOR_MIN, min(SPEED_FACTOR_MAX, round(avg_sf / SPEED_FACTOR_STEP) * SPEED_FACTOR_STEP))
+            
+            child_stations.append((idx, float(avg_q), float(avg_sf)))
+            
+    return [origin_stop] + child_stations
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +486,7 @@ def solve(
     coords: list[tuple[float, float]],
     prefs: UserPreferences,
     road_km_mat: np.ndarray | None = None,
+    speed_limit_mat: np.ndarray | None = None,
 ) -> tuple[RouteResult, list[dict], list[float]]:
     """Run the evolutionary algorithm.
 
@@ -416,30 +509,31 @@ def solve(
     global_best_z = INF
 
     def _key(stops):
-        return tuple(sorted((idx, round(q)) for idx, q in stops))
+        return tuple(sorted((idx, round(q), round(sf, 2)) for idx, q, sf in stops))
 
     def _eval(stops):
         key = _key(stops)
-        z, det = evaluate_plan(stops, n, energy_mat, time_mat, station_kw, station_meta, prefs, road_km_mat)
+        z, det = evaluate_plan(stops, n, energy_mat, time_mat, station_kw, station_meta, prefs, road_km_mat, speed_limit_mat)
         if key not in seen and z < INF:
             seen.add(key)
             all_evaluated.append({
                 "z": z,
                 "stops": list(stops),
-                "n_stops": len([q for _, q in stops if q > 0]),
+                "n_stops": len([q for idx, q, sf in stops if idx > 0 and q > 0]),
                 "total_time": det["total_drive"] + det["total_ct"] + det["total_wt"],
                 "cost": det["total_cc"],
                 "distance": det["total_distance"],
                 "dest_soc": det["battery_dest"],
                 "path": det["path"],
                 "charge_map": det["charge_map"],
+                "segment_speeds": det["segment_speeds"],
             })
         return z
 
     fitnesses = [_eval(ind) for ind in population]
 
     for gen in range(EA_GENERATIONS):
-        new_pop: list[list[tuple[int, float]]] = []
+        new_pop: list[list[tuple[int, float, float]]] = []
 
         # Elitism
         ranked = sorted(range(len(population)), key=lambda i: fitnesses[i])
@@ -475,15 +569,18 @@ def solve(
         else:
             no_improve_count += 1
 
-        if (gen + 1) % 20 == 0 or gen == 0 or no_improve_count >= 50 or gen == EA_GENERATIONS - 1:
+        # Adaptive patience: give more time when no feasible solution found yet
+        patience = 100 if global_best_z < INF else 200
+
+        if (gen + 1) % 20 == 0 or gen == 0 or no_improve_count >= patience or gen == EA_GENERATIONS - 1:
             feas = sum(1 for f in fitnesses if f < INF)
             log.step(f"gen {gen+1:>3}/{EA_GENERATIONS}: "
                      f"best Z={best_z:.1f}  feasible={feas}/{len(population)}  "
                      f"unique={len(all_evaluated)}")
                   
-        # Break if no improvement for 50 generations
-        if no_improve_count >= 50:
-            log.step(f"Early stopping at gen {gen+1} (no improvement for 50 gens)")
+        # Break if no improvement for `patience` generations
+        if no_improve_count >= patience:
+            log.step(f"Early stopping at gen {gen+1} (no improvement for {patience} gens)")
             break
 
     # Sort all evaluated solutions
@@ -497,6 +594,8 @@ def solve(
             1, best["path"], best["charge_map"],
             energy_mat, time_mat, station_kw, station_meta, coords, prefs,
             road_km_mat,
+            speed_limit_mat=speed_limit_mat,
+            segment_speeds=best["segment_speeds"],
         )
 
     return best_route, all_evaluated, best_per_gen

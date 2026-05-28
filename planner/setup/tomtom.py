@@ -31,7 +31,11 @@ def load_api_key() -> str:
 
 
 import time
-from planner.setup.routing_cache import get_route_from_cache, save_route_to_cache, get_geocode_from_cache, save_geocode_to_cache
+from planner.setup.routing_cache import (
+    get_route_from_cache, save_route_to_cache,
+    get_geocode_from_cache, save_geocode_to_cache,
+    get_reverse_geocode_from_cache, save_reverse_geocode_to_cache,
+)
 
 def geocode(query: str, api_key: str) -> tuple[float, float]:
     """Geocode a location string via TomTom.  Returns (lat, lon)."""
@@ -172,3 +176,39 @@ def route_with_geometry(
     save_route_to_cache(lat_o, lon_o, lat_d, lon_d, km, mins, geometry)
     
     return geometry
+
+def reverse_geocode(lat: float, lon: float, api_key: str) -> str:
+    """Reverse geocode coordinates via TomTom. Returns a label (e.g. 'Izmir, Turkey')."""
+    cached = get_reverse_geocode_from_cache(lat, lon)
+    if cached is not None:
+        return cached
+
+    url = f"https://api.tomtom.com/search/2/reverseGeocode/{lat},{lon}.json"
+    params = {"key": api_key}
+    
+    try:
+        r = requests.get(url, params=params, timeout=60)
+        if r.status_code in (403, 429):
+            raise RuntimeError(f"API limit or quota exceeded ({r.status_code}). Stop.")
+        r.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        status_code = getattr(e.response, "status_code", None)
+        if status_code in (403, 429):
+            raise RuntimeError(f"API limit or quota exceeded ({status_code}). Stop.") from e
+        raise
+
+    addresses = r.json().get("addresses") or []
+    if not addresses:
+        return f"{lat:.4f}, {lon:.4f}"
+        
+    addr = addresses[0].get("address", {})
+    municipality = addr.get("municipality") or addr.get("freeformAddress")
+    country = addr.get("country") or "Turkey"
+    
+    if municipality:
+        label = f"{municipality}, {country}"
+    else:
+        label = f"{lat:.4f}, {lon:.4f}"
+        
+    save_reverse_geocode_to_cache(lat, lon, label)
+    return label

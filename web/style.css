@@ -1,0 +1,274 @@
+/* ═══════════════════════════════════════════════════════════
+   EV Route Planner — Mobile-First Streamlit CSS
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Google Font (loaded via st.markdown in app.py) ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* ── Global ── */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Prevent iOS zoom on input focus (font-size >= 16px) */
+input, select, textarea {
+    font-size: 16px !important;
+}
+
+/* ── Header ── */
+.app-header {
+    text-align: center;
+    padding: 1.5rem 0.5rem 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.app-header h1 {
+    font-size: 1.75rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #2563EB 0%, #7c3aed 50%, #06b6d4 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.25rem;
+    line-height: 1.2;
+}
+
+.app-header p {
+    color: #94a3b8;
+    font-size: 0.9rem;
+    margin: 0;
+}
+
+/* ── Section Labels ── */
+.section-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.25rem;
+    margin-top: 1rem;
+}
+
+/* ── Metric Cards ── */
+.metric-row {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin: 1rem 0;
+}
+
+.metric-card {
+    flex: 1;
+    min-width: 70px;
+    background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 0.75rem 0.5rem;
+    text-align: center;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.metric-card:hover {
+    transform: translateY(-2px);
+    border-color: #2563EB;
+}
+
+.metric-card .metric-icon {
+    font-size: 1.2rem;
+    margin-bottom: 0.2rem;
+}
+
+.metric-card .metric-value {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #f1f5f9;
+    line-height: 1.2;
+}
+
+.metric-card .metric-label {
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.15rem;
+}
+
+/* ── Map / Image Container ── */
+.map-container {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #334155;
+    margin: 1rem 0;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+.map-container img {
+    width: 100%;
+    display: block;
+}
+
+/* ── Per-Leg Table ── */
+.leg-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    margin: 0.5rem 0;
+}
+
+.leg-table th {
+    background: #1e293b;
+    color: #94a3b8;
+    font-weight: 600;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.5rem;
+    text-align: left;
+    border-bottom: 2px solid #334155;
+}
+
+.leg-table td {
+    padding: 0.5rem;
+    border-bottom: 1px solid #1e293b;
+    color: #e2e8f0;
+}
+
+.leg-table tr:hover td {
+    background: rgba(37, 99, 235, 0.08);
+}
+
+/* ── Charging Stop Card ── */
+.stop-card {
+    background: #1e293b;
+    border-radius: 10px;
+    padding: 0.75rem;
+    margin: 0.5rem 0;
+    border-left: 3px solid #2563EB;
+}
+
+.stop-card .stop-name {
+    font-weight: 600;
+    color: #f1f5f9;
+    font-size: 0.85rem;
+}
+
+.stop-card .stop-detail {
+    color: #94a3b8;
+    font-size: 0.75rem;
+    margin-top: 0.25rem;
+}
+
+/* ── History Card ── */
+.history-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    padding: 0.75rem;
+    margin: 0.4rem 0;
+    cursor: pointer;
+    transition: border-color 0.2s ease;
+}
+
+.history-card:hover {
+    border-color: #2563EB;
+}
+
+.history-card .history-route {
+    font-weight: 600;
+    color: #e2e8f0;
+    font-size: 0.85rem;
+}
+
+.history-card .history-meta {
+    color: #64748b;
+    font-size: 0.72rem;
+    margin-top: 0.2rem;
+}
+
+/* ── Button Override ── */
+div.stButton > button[kind="primary"] {
+    width: 100%;
+    min-height: 52px;
+    font-size: 1.05rem !important;
+    font-weight: 700 !important;
+    border-radius: 12px !important;
+    background: linear-gradient(135deg, #2563EB 0%, #7c3aed 100%) !important;
+    border: none !important;
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.35) !important;
+    transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+    letter-spacing: 0.02em;
+}
+
+div.stButton > button[kind="primary"]:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 24px rgba(37, 99, 235, 0.5) !important;
+}
+
+div.stButton > button[kind="primary"]:active {
+    transform: translateY(0) !important;
+}
+
+/* ── Expander Styling ── */
+div[data-testid="stExpander"] {
+    border: 1px solid #334155 !important;
+    border-radius: 12px !important;
+    overflow: hidden;
+    margin: 0.5rem 0;
+}
+
+div[data-testid="stExpander"] summary {
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    padding: 0.75rem 1rem !important;
+}
+
+/* ── Sidebar QR ── */
+.qr-container {
+    text-align: center;
+    padding: 1rem;
+    background: #ffffff;
+    border-radius: 12px;
+    margin: 0.5rem 0;
+}
+
+/* ── Divider ── */
+.divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent 0%, #334155 50%, transparent 100%);
+    margin: 1.25rem 0;
+}
+
+/* ── Success Banner ── */
+.success-banner {
+    background: linear-gradient(135deg, rgba(22, 163, 74, 0.15) 0%, rgba(37, 99, 235, 0.1) 100%);
+    border: 1px solid rgba(22, 163, 74, 0.3);
+    border-radius: 12px;
+    padding: 0.75rem 1rem;
+    text-align: center;
+    margin: 0.75rem 0;
+}
+
+.success-banner .success-text {
+    color: #4ade80;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+/* ── Responsive tweaks ── */
+@media (max-width: 480px) {
+    .metric-card {
+        min-width: 60px;
+        padding: 0.6rem 0.3rem;
+    }
+    .metric-card .metric-value {
+        font-size: 0.95rem;
+    }
+    .leg-table {
+        font-size: 0.72rem;
+    }
+    .leg-table th, .leg-table td {
+        padding: 0.35rem;
+    }
+}

@@ -187,7 +187,7 @@ def plan_single_leg(
         rf = road_km / max(crow_total, 1e-3)
 
         # 3b. Build Cost Matrices using Dynamic Eco-Routing Fallback
-        e_mat, t_mat, road_km_mat = build_cost_matrices(
+        e_mat, t_mat, road_km_mat, speed_limit_mat = build_cost_matrices(
             dist_mat, rf,
             prefs.consumption_kwh_per_100km,
             prefs.battery_capacity_kwh,
@@ -217,7 +217,7 @@ def plan_single_leg(
         kw_arr = np.array([0.0] + station_kw + [0.0])
         best_route, all_evaluated, convergence = ea_solver.solve(
             n, e_mat, t_mat, kw_arr, station_meta, coords, leg_prefs,
-            road_km_mat,
+            road_km_mat, speed_limit_mat,
         )
 
     if not all_evaluated:
@@ -307,9 +307,11 @@ def plan_single_leg(
 def _make_leg_prefs(prefs: UserPreferences, battery_start: float, is_final_leg: bool) -> UserPreferences:
     """Create a copy of prefs with adjusted battery_start for a specific leg."""
     
-    # For intermediate legs, require arriving with at least 50% (or the user's end min)
-    # so we don't start the next leg stranded. (ALNS will optimize this later)
-    end_pct = prefs.battery_end_min_pct if is_final_leg else max(prefs.battery_end_min_pct, 50.0)
+    # For intermediate legs, only require arriving above the battery floor.
+    # The old hard minimum of 50% made many routes infeasible when the ceiling
+    # was low (e.g. ceil=75%, floor=15% → only 25% usable per segment).
+    # ALNS can later optimize handoff SOC between legs.
+    end_pct = prefs.battery_end_min_pct if is_final_leg else max(prefs.battery_end_min_pct, prefs.battery_min_enroute_pct)
     
     return UserPreferences(
         source=prefs.source,
@@ -332,7 +334,8 @@ def _make_leg_prefs(prefs: UserPreferences, battery_start: float, is_final_leg: 
 # ---------------------------------------------------------------------------
 
 def plan_journey(prefs: UserPreferences, live_traffic: bool = False,
-                 weather_seed: int = 42) -> MultiLegResult:
+                 weather_seed: int = 42,
+                 waypoint_coords: list[tuple[float, float]] | None = None) -> MultiLegResult:
     """Plan the full multi-leg journey.
 
     Steps:
@@ -373,9 +376,16 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False,
     # Step 1: Geocode all waypoints
     with log.timed("Geocoding all waypoints"):
         wp_coords: list[tuple[float, float]] = []
-        for i, wp in enumerate(waypoints):
-            log.info(f"  [{i+1}/{len(waypoints)}] {wp}")
-            wp_coords.append(_geocode_location(wp, api_key))
+        if waypoint_coords is not None:
+            if len(waypoint_coords) != len(waypoints):
+                raise ValueError(f"waypoint_coords length ({len(waypoint_coords)}) does not match waypoints length ({len(waypoints)})")
+            for i, (lat, lon) in enumerate(waypoint_coords):
+                log.step(f"Using coordinates for {waypoints[i]}: ({lat:.5f}, {lon:.5f})")
+                wp_coords.append((lat, lon))
+        else:
+            for i, wp in enumerate(waypoints):
+                log.info(f"  [{i+1}/{len(waypoints)}] {wp}")
+                wp_coords.append(_geocode_location(wp, api_key))
 
     # Step 2: Load stations once
     with log.timed("Loading charging station database"):
