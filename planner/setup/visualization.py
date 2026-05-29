@@ -275,7 +275,10 @@ def plot_multi_leg(multi: MultiLegResult, save_path: str | Path | None = None) -
                       edgecolor="#cccccc"),
             zorder=20)
 
-    fig.tight_layout()
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        fig.tight_layout()
 
     if save_path:
         p = Path(save_path)

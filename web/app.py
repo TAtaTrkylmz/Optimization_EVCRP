@@ -96,7 +96,10 @@ class LogCapture:
         self._st_placeholder = st_placeholder
 
     def start(self):
-        self._original_stdout = sys.stdout
+        if getattr(sys.stdout, "_original_stdout", None) is not None:
+            self._original_stdout = sys.stdout._original_stdout
+        else:
+            self._original_stdout = sys.stdout
         sys.stdout = self
 
     def stop(self):
@@ -353,9 +356,9 @@ def render_history_sidebar():
                 c4.metric("🔋 SOC", f"{entry['battery_end']:.0f}%")
 
                 st.image(entry["map_png"], caption="Route Map (Static)",
-                         use_container_width=True)
+                         width='stretch')
                 st.image(entry["conv_png"], caption="Convergence",
-                         use_container_width=True)
+                         width='stretch')
 
                 if entry.get("log_text"):
                     with st.expander("📋 Pipeline Logs"):
@@ -450,7 +453,7 @@ def render_results(result, map_buf, conv_buf, log_text=""):
     st.markdown('<div class="section-label">🗺️ Static Map (Network & Unused Stations)</div>',
                 unsafe_allow_html=True)
     st.markdown('<div class="map-container">', unsafe_allow_html=True)
-    st.image(map_buf, use_container_width=True)
+    st.image(map_buf, width='stretch')
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Per-leg details table ──
@@ -568,7 +571,7 @@ def render_results(result, map_buf, conv_buf, log_text=""):
     # ── Convergence plot (collapsible) ──
     with st.expander("📈 Algorithm Convergence", expanded=False):
         st.image(conv_buf, caption="Z-score convergence per generation",
-                 use_container_width=True)
+                 width='stretch')
 
     # ── Pipeline logs (collapsible) ──
     if log_text:
@@ -720,12 +723,12 @@ def main():
             
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("↩️ Undo Last", use_container_width=True):
+                if st.button("↩️ Undo Last", width='stretch'):
                     if st.session_state.map_waypoints:
                         st.session_state.map_waypoints.pop()
                     st.rerun()
             with c2:
-                if st.button("🗑️ Clear All", use_container_width=True):
+                if st.button("🗑️ Clear All", width='stretch'):
                     st.session_state.map_waypoints = []
                     st.rerun()
         else:
@@ -781,7 +784,7 @@ def main():
 
     # ── Plan button ──
     plan_clicked = st.button("⚡ Plan My Route", type="primary",
-                             use_container_width=True)
+                             width='stretch')
 
     # ── Execution ──
     if plan_clicked:
@@ -921,12 +924,12 @@ def main():
         )
 
         st.markdown('<div class="map-container">', unsafe_allow_html=True)
-        st.image(map_buf, use_container_width=True)
+        st.image(map_buf, width='stretch')
         st.markdown('</div>', unsafe_allow_html=True)
 
         with st.expander("📈 Algorithm Convergence", expanded=False):
             st.image(conv_buf, caption="Z-score convergence per generation",
-                     use_container_width=True)
+                     width='stretch')
 
         if last.get("log_text"):
             with st.expander("📋 Pipeline Logs", expanded=False):

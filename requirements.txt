@@ -8,3 +8,5 @@ streamlit>=1.45
 qrcode[pil]>=8.0
 matplotlib>=3.8
 contextily>=1.6
+folium>=0.14
+streamlit-folium>=0.11

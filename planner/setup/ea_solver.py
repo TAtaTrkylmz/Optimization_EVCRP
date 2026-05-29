@@ -92,8 +92,12 @@ def evaluate_plan(
 
         q = charge_map.get(i, 0.0)
         if q > 0:
-            if battery + q > b_ceil + 0.01:
-                return INF, None
+            # Clamp charge to available headroom — real chargers stop at ceiling
+            q = min(q, b_ceil - battery)
+            if q <= 0:
+                q = 0.0
+            else:
+                charge_map[i] = q  # update for result builder consistency
             battery = min(battery + q, b_ceil)
             
             sid = station_meta[i - 1][0]
@@ -295,7 +299,7 @@ def greedy_baseline(
             charge = max(0.0, b_ceil - battery)
             battery = min(battery + charge, b_ceil)
             if charge > 0 and farthest < n - 1:
-                stops.append((farthest, round(charge), 1.0))
+                stops.append((farthest, charge, 1.0))
             current = farthest
             continue
 
@@ -303,7 +307,7 @@ def greedy_baseline(
         charge = max(0.0, b_ceil - battery)
         battery = min(battery + charge, b_ceil)
         if charge > 0:
-            stops.append((farthest, round(charge), 1.0))
+            stops.append((farthest, charge, 1.0))
         current = farthest
 
     return stops
