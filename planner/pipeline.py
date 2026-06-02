@@ -25,7 +25,10 @@ from planner.setup.config import (
     ANXIETY_RANGE_KM,
 )
 from planner.setup.models import LegResult, MultiLegResult
-from planner.setup.tomtom import load_api_key, geocode, route_summary, route_with_geometry
+from planner.setup.tomtom import (
+    load_api_key, geocode, route_summary, route_with_geometry,
+    reset_api_calls_count, get_api_calls_count
+)
 from planner.setup.stations import load_stations, filter_corridor, build_node_list
 from planner.setup.matrices import haversine_matrix, build_cost_matrices
 from planner.setup import ea_solver
@@ -348,6 +351,8 @@ def plan_journey(prefs: UserPreferences, live_traffic: bool = False,
     """
     log.mark_journey_start()
     api_key = load_api_key()
+    reset_api_calls_count()
+
 
     # Build the full waypoint list: [source, dest1, dest2, ..., final_dest]
     waypoints = [prefs.source] + list(prefs.destinations)
@@ -510,6 +515,8 @@ def _print_journey_summary(result: MultiLegResult) -> None:
     log.info(f"  Total cost     : {result.total_cost:.1f} TL")
     log.info(f"  Total Z-score  : {result.total_z_score:.2f}")
     log.info(f"  Battery at end : {result.battery_at_final_dest:.1f}%")
+    log.info(f"  Total API Calls: {get_api_calls_count()}")
+
 
     # Per-leg summary table
     log.info(f"")

@@ -37,6 +37,16 @@ from planner.setup.routing_cache import (
     get_reverse_geocode_from_cache, save_reverse_geocode_to_cache,
 )
 
+API_CALLS_COUNT = 0
+
+def reset_api_calls_count() -> None:
+    global API_CALLS_COUNT
+    API_CALLS_COUNT = 0
+
+def get_api_calls_count() -> int:
+    return API_CALLS_COUNT
+
+
 def geocode(query: str, api_key: str) -> tuple[float, float]:
     """Geocode a location string via TomTom.  Returns (lat, lon)."""
     cached = get_geocode_from_cache(query)
@@ -57,6 +67,9 @@ def geocode(query: str, api_key: str) -> tuple[float, float]:
         if status_code in (403, 429):
             raise RuntimeError(f"API limit or quota exceeded ({status_code}). Stop.") from e
         raise
+
+    global API_CALLS_COUNT
+    API_CALLS_COUNT += 1
 
     results = r.json().get("results") or []
     if not results:
@@ -104,6 +117,9 @@ def route_summary(
         if status_code in (403, 429):
             raise RuntimeError(f"API limit or quota exceeded ({status_code}). Stop.") from e
         raise
+
+    global API_CALLS_COUNT
+    API_CALLS_COUNT += 1
         
     routes = r.json().get("routes") or []
     if not routes:
@@ -152,6 +168,9 @@ def route_with_geometry(
         r.raise_for_status()
     except Exception:
         return [(lat_o, lon_o), (lat_d, lon_d)]
+
+    global API_CALLS_COUNT
+    API_CALLS_COUNT += 1
     
     routes = r.json().get("routes") or []
     if not routes:
@@ -196,6 +215,9 @@ def reverse_geocode(lat: float, lon: float, api_key: str) -> str:
         if status_code in (403, 429):
             raise RuntimeError(f"API limit or quota exceeded ({status_code}). Stop.") from e
         raise
+
+    global API_CALLS_COUNT
+    API_CALLS_COUNT += 1
 
     addresses = r.json().get("addresses") or []
     if not addresses:
