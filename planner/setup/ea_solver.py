@@ -15,7 +15,7 @@ from planner.setup.config import (
     DC_EFFICIENCY, EA_CROSSOVER_RATE, EA_GENERATIONS, EA_MUTATION_RATE,
     EA_POP_SIZE, EA_TOURNAMENT_K, UserPreferences,
     SPEED_FACTOR_MIN, SPEED_FACTOR_MAX, SPEED_FACTOR_STEP,
-    SPEED_LIMIT_HEADROOM, VELOCITY_EXPONENT, BASE_VELOCITY_KMH,
+    SPEED_LIMIT_HEADROOM, SPEED_LIMIT_FLOOR_RATIO, VELOCITY_EXPONENT, BASE_VELOCITY_KMH,
     CRUISE_VELOCITY_KMH,
 )
 from planner.setup.models import ChargingStop, RouteResult
@@ -110,12 +110,17 @@ def evaluate_plan(
 
         # Speed limit handling from TomTom speed_limit_mat
         max_sf = SPEED_FACTOR_MAX
+        min_sf = SPEED_FACTOR_MIN
         if speed_limit_mat is not None:
             max_sf = speed_limit_mat[i, j]
+            # Derive dynamic speed floor limit based on road speed limit
+            road_avg_sf = max_sf / SPEED_LIMIT_HEADROOM
+            min_sf = max(SPEED_FACTOR_MIN, road_avg_sf * SPEED_LIMIT_FLOOR_RATIO)
+            min_sf = min(min_sf, max_sf)
 
         # Determine requested speed factor, clamp between min/max
         sf = speed_map.get(i, 1.0)
-        actual_sf = max(SPEED_FACTOR_MIN, min(sf, max_sf))
+        actual_sf = max(min_sf, min(sf, max_sf))
         v_new = BASE_VELOCITY_KMH * actual_sf
         segment_speeds.append(v_new)
 

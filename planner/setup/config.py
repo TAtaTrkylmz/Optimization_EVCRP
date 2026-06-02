@@ -32,8 +32,8 @@ ENERGY_COST_PER_KWH = 6.5         # TL per kWh of energy consumed (DC charging r
 DC_EFFICIENCY = 0.88
 
 # ── Velocity ──
-BASE_VELOCITY_KMH = 70.0         # eco speed — used for ENERGY computation
-CRUISE_VELOCITY_KMH = 90.0       # cruise speed — used for TIME computation
+BASE_VELOCITY_KMH = 70.0         # eco speed — used for ENERGY computation - BASEKINE
+CRUISE_VELOCITY_KMH = 90.0       # cruise speed — used for TIME computation - FALLBACK
 VELOCITY_EXPONENT = 1.6           # drag exponent for consumption scaling
 
 # ── Speed gene (per-segment velocity evolved by the EA) ──
@@ -41,6 +41,8 @@ SPEED_FACTOR_MIN = 0.7            # min multiplier on base velocity (49 km/h)
 SPEED_FACTOR_MAX = 1.3            # max multiplier on base velocity (91 km/h)
 SPEED_FACTOR_STEP = 0.1           # mutation granularity
 SPEED_LIMIT_HEADROOM = 1.10       # allow up to speed_limit + 10%
+SPEED_LIMIT_FLOOR_RATIO = 0.70    # dynamic speed floor (minimum 70% of road speed limit)
+
 
 # ── Corridor ──
 MAX_CROSS_TRACK_KM = 150.0
