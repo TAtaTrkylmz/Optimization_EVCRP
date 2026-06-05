@@ -148,7 +148,15 @@ def get_vehicle_options():
         range_km = entry.get("range_km", 0)
         eff = entry.get("efficiency_wh_per_km", 0)
         display = f"{name}  —  {battery:.0f} kWh, {range_km:.0f} km, {eff:.0f} Wh/km"
-        vehicles.append({"display": display, "car_id": car_id, "name": name})
+        
+        # Extract brand (first word by default, handling multi-word brand cases)
+        brand = name.split()[0] if name.split() else "Unknown"
+        if name.lower().startswith("alfa romeo"):
+            brand = "Alfa Romeo"
+        elif name.lower().startswith("aston martin"):
+            brand = "Aston Martin"
+            
+        vehicles.append({"display": display, "car_id": car_id, "name": name, "brand": brand})
     # Sort alphabetically by name
     vehicles.sort(key=lambda v: v["name"].lower())
     return vehicles
@@ -613,13 +621,44 @@ def main():
     # ── Vehicle selector ──
     st.markdown('<div class="section-label">🔌 Vehicle</div>',
                 unsafe_allow_html=True)
-    selected_idx = st.selectbox(
-        "Select your EV",
-        range(len(display_names)),
-        index=default_idx,
-        format_func=lambda i: display_names[i],
-        label_visibility="collapsed",
-    )
+    
+    # Extract unique brands and sort them
+    brands = sorted(list(set(v["brand"] for v in vehicles)))
+    brands_options = ["All Brands"] + brands
+    
+    col_brand, col_model = st.columns([1, 2])
+    with col_brand:
+        selected_brand = st.selectbox(
+            "Brand",
+            brands_options,
+            index=0,
+            label_visibility="collapsed",
+        )
+        
+    # Filter vehicles by brand
+    if selected_brand != "All Brands":
+        filtered_vehicles = [v for v in vehicles if v["brand"] == selected_brand]
+    else:
+        filtered_vehicles = vehicles
+        
+    display_names = [v["display"] for v in filtered_vehicles]
+    car_ids = [v["car_id"] for v in filtered_vehicles]
+
+    # Default selection: Tesla Model 3 RWD (car_id 3403) if available
+    default_idx = 0
+    for i, v in enumerate(filtered_vehicles):
+        if v["car_id"] == 3403:
+            default_idx = i
+            break
+
+    with col_model:
+        selected_idx = st.selectbox(
+            "Select your EV",
+            range(len(display_names)),
+            index=default_idx,
+            format_func=lambda i: display_names[i],
+            label_visibility="collapsed",
+        )
     selected_car_id = car_ids[selected_idx]
 
     # ── Source / Destination ──
