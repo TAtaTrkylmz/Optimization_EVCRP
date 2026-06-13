@@ -38,7 +38,7 @@ VELOCITY_EXPONENT = 1.6           # drag exponent for consumption scaling
 
 # ── Speed gene (per-segment velocity evolved by the EA) ──
 SPEED_FACTOR_MIN = 0.7            # min multiplier on base velocity (49 km/h)
-SPEED_FACTOR_MAX = 1.3            # max multiplier on base velocity (91 km/h)
+SPEED_FACTOR_MAX = 2.0            # search space cap — actual speed is dynamically capped by the segment's speed limit
 SPEED_FACTOR_STEP = 0.1           # mutation granularity
 SPEED_LIMIT_HEADROOM = 1.10       # allow up to speed_limit + 10%
 SPEED_LIMIT_FLOOR_RATIO = 0.70    # dynamic speed floor (minimum 70% of road speed limit)

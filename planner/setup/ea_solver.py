@@ -137,11 +137,10 @@ def evaluate_plan(
         total_anx += max(0.0, anxiety_thr - battery)
         
         # Scale drive time
-        if speed_limit_mat is not None and speed_limit_mat[i, j] < SPEED_FACTOR_MAX - 1e-4:
-            # Cache hit: speed limit was derived from cached average speed
-            v_default = (speed_limit_mat[i, j] / SPEED_LIMIT_HEADROOM) * BASE_VELOCITY_KMH
+        if road_km_mat is not None and time_mat[i, j] > 0:
+            # v_default is the actual average speed at which the cached time_mat was calculated
+            v_default = road_km_mat[i, j] / (time_mat[i, j] / 60.0)
         else:
-            # Cache miss or haversine fallback
             v_default = CRUISE_VELOCITY_KMH
 
         drive_t = time_mat[i, j] * (v_default / v_new)
@@ -240,8 +239,9 @@ def build_result(
             total_distance += road_km_mat[i, j]
 
         # Time handling
-        if speed_limit_mat is not None and speed_limit_mat[i, j] < SPEED_FACTOR_MAX - 1e-4:
-            v_default = (speed_limit_mat[i, j] / SPEED_LIMIT_HEADROOM) * BASE_VELOCITY_KMH
+        if road_km_mat is not None and time_mat[i, j] > 0:
+            # v_default is the actual average speed at which the cached time_mat was calculated
+            v_default = road_km_mat[i, j] / (time_mat[i, j] / 60.0)
         else:
             v_default = CRUISE_VELOCITY_KMH
 
