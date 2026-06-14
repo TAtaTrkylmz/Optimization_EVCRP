@@ -116,6 +116,9 @@ def evaluate_plan(
             # Derive dynamic speed floor limit based on road speed limit
             road_avg_sf = max_sf / SPEED_LIMIT_HEADROOM
             min_sf = max(SPEED_FACTOR_MIN, road_avg_sf * SPEED_LIMIT_FLOOR_RATIO)
+            # Ensure the floor does not force us to drive faster than the eco speed (1.0)
+            # to guarantee that eco driving is always a feasible option.
+            min_sf = min(min_sf, 1.0)
             min_sf = min(min_sf, max_sf)
 
         # Determine requested speed factor, clamp between min/max
