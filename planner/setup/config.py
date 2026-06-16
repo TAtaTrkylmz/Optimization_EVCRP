@@ -130,7 +130,8 @@ class UserPreferences:
 
     @property
     def w_cost(self) -> float:
-        return self.priority_cost / 5.0
+        # Scaled down by 100 to prevent Lira values from dominating minutes in the Z-score
+        return (self.priority_cost / 5.0) * 0.1
 
     @property
     def w_anxiety(self) -> float:
